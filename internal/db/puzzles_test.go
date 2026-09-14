@@ -59,7 +59,13 @@ func TestOpenAndInsertPuzzles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open(%q) error: %v", url, err)
 	}
-	defer sqlDB.Close()
+	// t.Cleanup callbacks run in LIFO order (most-recently-registered
+	// first), so register the close first and the delete second: the
+	// delete then runs before the close, letting it actually reach the
+	// database instead of failing against an already-closed connection.
+	t.Cleanup(func() {
+		sqlDB.Close()
+	})
 
 	ctx := context.Background()
 	var zeroGrid sudoku.Grid

@@ -27,15 +27,34 @@ func TestGenerateProducesValidUniquePuzzle(t *testing.T) {
 }
 
 func TestGenerateTargetsRequestedDifficulty(t *testing.T) {
-	for _, d := range []Difficulty{Easy, Medium, Hard, Expert} {
-		rng := rand.New(rand.NewPCG(uint64(d), uint64(d)+1))
-		p := Generate(d, rng)
+	// The underlying difficulty distribution from digging holes is bimodal
+	// (Medium and Hard are comparatively rare before Generate's internal
+	// retry compensates), so a single seed per tier could land 2+ tiers
+	// away just from bad luck. Use several seeds per tier to give real
+	// margin against an unlucky seed while still catching an actual
+	// regression in difficulty targeting.
+	const seedsPerTier = 5
 
-		// Generate retries internally (see maxGenerateAttempts) but isn't
-		// guaranteed to hit the exact requested tier every time, so allow
-		// landing one tier away.
-		if got := diffDistance(p.Difficulty, d); got > 1 {
-			t.Errorf("Generate(%v): actual difficulty %v is %d tiers away, want within 1", d, p.Difficulty, got)
+	for _, d := range []Difficulty{Easy, Medium, Hard, Expert} {
+		for i := uint64(0); i < seedsPerTier; i++ {
+			seed := uint64(d)*seedsPerTier + i
+			rng := rand.New(rand.NewPCG(seed, seed+1))
+			p := Generate(d, rng)
+
+			// Generate retries internally (see maxGenerateAttempts) but isn't
+			// guaranteed to hit the exact requested tier every time, so allow
+			// landing one tier away.
+			if got := diffDistance(p.Difficulty, d); got > 1 {
+				t.Errorf("Generate(%v) seed %d: actual difficulty %v is %d tiers away, want within 1", d, seed, p.Difficulty, got)
+			}
+
+			// This part of the contract is deterministic, not statistical:
+			// Generate must always report the difficulty its own puzzle
+			// actually rates as, regardless of whether that matches the
+			// requested tier.
+			if rated := Rate(p.Givens); p.Difficulty != rated {
+				t.Errorf("Generate(%v) seed %d: p.Difficulty = %v, but Rate(p.Givens) = %v", d, seed, p.Difficulty, rated)
+			}
 		}
 	}
 }

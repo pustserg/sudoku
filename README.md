@@ -17,7 +17,7 @@ solving the same puzzle together), leaderboards.
 
 ## Tech stack
 
-- **Language**: Go
+- **Language**: Go 1.27+ (set `GOTOOLCHAIN=auto` — `go env -w GOTOOLCHAIN=auto` — so `go build`/`go get` can fetch a matching toolchain automatically if your installed Go is older)
 - **Web UI**: server-rendered HTML with [htmx](https://htmx.org/)
 - **API**: JSON REST, consumed by the same htmx pages today and by a future
   mobile client later

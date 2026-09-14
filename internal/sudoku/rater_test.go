@@ -19,6 +19,16 @@ func TestRate(t *testing.T) {
 			want: Easy,
 		},
 		{
+			name: "puzzle needing a locked-candidates deduction rates Medium",
+			grid: mustParseGrid(t, mediumRatedPuzzle),
+			want: Medium,
+		},
+		{
+			name: "puzzle needing a naked/hidden pair deduction rates Hard",
+			grid: mustParseGrid(t, hardRatedPuzzle),
+			want: Hard,
+		},
+		{
 			name: "AI Escargot stalls the basic technique set",
 			grid: mustParseGrid(t, aiEscargotPuzzle),
 			want: Expert,
@@ -31,6 +41,21 @@ func TestRate(t *testing.T) {
 				t.Errorf("Rate() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestAIEscargotHasUniqueSolution pins down that AI Escargot is rated
+// Expert for the right reason: Rate() alone cannot distinguish "genuinely
+// needs techniques beyond this set" from "stalled because the fixture is
+// malformed/contradictory or has no solution" — both return Expert. This
+// confirms the puzzle is a real, uniquely-solvable Sudoku.
+func TestAIEscargotHasUniqueSolution(t *testing.T) {
+	grid := mustParseGrid(t, aiEscargotPuzzle)
+	if !grid.Valid() {
+		t.Fatalf("aiEscargotPuzzle is not a valid grid (has a duplicate given)")
+	}
+	if _, count := Solve(grid); count != 1 {
+		t.Errorf("Solve(aiEscargotPuzzle) solution count = %d, want 1", count)
 	}
 }
 
@@ -47,6 +72,18 @@ func TestApplyNakedSingle(t *testing.T) {
 	}
 	if cands[4][4] != 0 {
 		t.Errorf("cands[4][4] = %09b, want 0 after placement", cands[4][4])
+	}
+}
+
+func TestApplyNakedSingleNoMatch(t *testing.T) {
+	var values Grid
+	var cands candidateGrid // all-empty: no cell has any candidate, let alone exactly one
+
+	if changed := applyNakedSingle(&values, &cands); changed {
+		t.Errorf("applyNakedSingle() = true, want false when no cell has exactly one candidate")
+	}
+	if values != (Grid{}) {
+		t.Errorf("values = %v, want unchanged zero grid", values)
 	}
 }
 
@@ -73,6 +110,18 @@ func TestApplyHiddenSingle(t *testing.T) {
 	}
 }
 
+func TestApplyHiddenSingleNoMatch(t *testing.T) {
+	var values Grid
+	var cands candidateGrid // all-empty: no digit is a candidate anywhere
+
+	if changed := applyHiddenSingle(&values, &cands); changed {
+		t.Errorf("applyHiddenSingle() = true, want false when no unit has a hidden single")
+	}
+	if values != (Grid{}) {
+		t.Errorf("values = %v, want unchanged zero grid", values)
+	}
+}
+
 func TestApplyLockedCandidates(t *testing.T) {
 	var cands candidateGrid
 	bit5 := uint16(1) << 5
@@ -95,6 +144,17 @@ func TestApplyLockedCandidates(t *testing.T) {
 	}
 }
 
+func TestApplyLockedCandidatesNoMatch(t *testing.T) {
+	var cands candidateGrid // all-empty: no digit is confined to a row/column/box
+
+	if changed := applyLockedCandidates(&cands); changed {
+		t.Errorf("applyLockedCandidates() = true, want false when nothing is locked")
+	}
+	if cands != (candidateGrid{}) {
+		t.Errorf("cands = %v, want unchanged zero candidateGrid", cands)
+	}
+}
+
 func TestApplyNakedPair(t *testing.T) {
 	var cands candidateGrid
 	pair := uint16(1)<<2 | uint16(1)<<7
@@ -110,6 +170,17 @@ func TestApplyNakedPair(t *testing.T) {
 	want := uint16(1) << 4
 	if cands[0][2] != want {
 		t.Errorf("cands[0][2] = %09b, want %09b", cands[0][2], want)
+	}
+}
+
+func TestApplyNakedPairNoMatch(t *testing.T) {
+	var cands candidateGrid // all-empty: no cell has exactly two candidates, let alone a matching pair
+
+	if changed := applyNakedPair(&cands); changed {
+		t.Errorf("applyNakedPair() = true, want false when no naked pair exists")
+	}
+	if cands != (candidateGrid{}) {
+		t.Errorf("cands = %v, want unchanged zero candidateGrid", cands)
 	}
 }
 
@@ -129,5 +200,16 @@ func TestApplyHiddenPair(t *testing.T) {
 	want := uint16(1)<<3 | uint16(1)<<8
 	if cands[0][0] != want || cands[0][1] != want {
 		t.Errorf("hidden-pair cells = %09b, %09b, want both %09b", cands[0][0], cands[0][1], want)
+	}
+}
+
+func TestApplyHiddenPairNoMatch(t *testing.T) {
+	var cands candidateGrid // all-empty: no digit-pair is confined to the same two cells
+
+	if changed := applyHiddenPair(&cands); changed {
+		t.Errorf("applyHiddenPair() = true, want false when no hidden pair exists")
+	}
+	if cands != (candidateGrid{}) {
+		t.Errorf("cands = %v, want unchanged zero candidateGrid", cands)
 	}
 }

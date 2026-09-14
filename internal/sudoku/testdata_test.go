@@ -118,3 +118,40 @@ const aiEscargotPuzzle = `
 . 4 . | . . . | . . 7
 . . 7 | . . . | 3 . .
 `
+
+// mediumRatedPuzzle was found by removing digits from wikipediaSolution
+// until Rate() first landed on Medium: it has a unique solution (verified
+// via Solve) and needs at least one locked-candidates (pointing pair /
+// box-line reduction) deduction beyond naked and hidden singles, but
+// nothing requiring naked or hidden pairs.
+const mediumRatedPuzzle = `
+. . 4 | . . . | 9 1 .
+6 . . | 1 . 5 | . . 8
+1 . 8 | 3 4 2 | 5 . .
+------+-------+------
+8 5 . | . 6 1 | . . .
+4 . 6 | 8 . . | . 9 .
+. . . | 9 . . | . 5 6
+------+-------+------
+. . . | 5 . . | . 8 4
+2 . . | 4 . . | . 3 .
+. . 5 | . . . | . 7 .
+`
+
+// hardRatedPuzzle was found the same way as mediumRatedPuzzle, continuing
+// to remove digits until Rate() first landed on Hard: it has a unique
+// solution (verified via Solve) and needs at least one naked-pair or
+// hidden-pair deduction to complete.
+const hardRatedPuzzle = `
+. . 4 | . . . | 9 1 2
+. . . | . . . | 3 . .
+1 . . | . . 2 | 5 . 7
+------+-------+------
+. 5 9 | 7 . . | . . 3
+4 2 . | . . . | . . 1
+. 1 . | 9 . 4 | 8 5 6
+------+-------+------
+9 6 1 | 5 3 7 | . 8 .
+2 . . | 4 . 9 | 6 3 5
+3 . . | 2 . . | 1 . .
+`

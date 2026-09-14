@@ -30,6 +30,10 @@ func main() {
 	databaseURL := flag.String("database-url", "", "Postgres connection string (default: DATABASE_URL env var)")
 	flag.Parse()
 
+	if *workers < 1 {
+		log.Fatalf("--workers must be at least 1, got %d", *workers)
+	}
+
 	dsn := *databaseURL
 	if dsn == "" {
 		dsn = config.Load().DatabaseURL

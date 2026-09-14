@@ -45,6 +45,7 @@ func NewStore() *Store {
 }
 
 // Create starts a new Game from a freshly pulled puzzle and returns it.
+// Returns an independent copy to prevent data races from concurrent access.
 func (s *Store) Create(p sudoku.Puzzle) *Game {
 	g := &Game{
 		ID:         newID(),
@@ -56,21 +57,27 @@ func (s *Store) Create(p sudoku.Puzzle) *Game {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.games[g.ID] = g
-	return g
+	result := *g
+	return &result
 }
 
 // Get returns the game with the given ID, or ok=false if it doesn't exist.
+// Returns an independent copy to prevent data races from concurrent access.
 func (s *Store) Get(id string) (*Game, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g, ok := s.games[id]
-	return g, ok
+	if !ok {
+		return nil, false
+	}
+	copy := *g
+	return &copy, true
 }
 
 // ApplyMove sets Current[row][col] = value (0 clears the cell) on the
 // game with the given id, and returns the updated Game. value must be
 // 0-9; row and col must be 0-8. A cell that is non-zero in Givens cannot
-// be changed.
+// be changed. Returns an independent copy to prevent data races from concurrent access.
 func (s *Store) ApplyMove(id string, row, col, value int) (*Game, error) {
 	if row < 0 || row > 8 || col < 0 || col > 8 || value < 0 || value > 9 {
 		return nil, ErrOutOfRange
@@ -87,7 +94,8 @@ func (s *Store) ApplyMove(id string, row, col, value int) (*Game, error) {
 		return nil, ErrGivenCell
 	}
 	g.Current[row][col] = value
-	return g, nil
+	copy := *g
+	return &copy, nil
 }
 
 // newID returns a random, opaque, unguessable-enough game identifier.

@@ -29,8 +29,8 @@ func TestStoreCreateAndGet(t *testing.T) {
 	if !ok {
 		t.Fatalf("Get(%q) ok = false, want true", g.ID)
 	}
-	if got != g {
-		t.Errorf("Get(%q) returned a different *Game than Create produced", g.ID)
+	if *got != *g {
+		t.Errorf("Get(%q) returned different game data than Create produced", g.ID)
 	}
 }
 
@@ -77,7 +77,7 @@ func TestStoreApplyMoveOutOfRange(t *testing.T) {
 	g := s.Create(testPuzzle())
 
 	tests := []struct {
-		name           string
+		name            string
 		row, col, value int
 	}{
 		{"row too low", -1, 0, 1},
@@ -120,10 +120,41 @@ func TestGameSolved(t *testing.T) {
 		t.Error("Solved() = true immediately after creation, want false")
 	}
 
-	if _, err := s.ApplyMove(g.ID, 0, 1, 3); err != nil {
+	updated, err := s.ApplyMove(g.ID, 0, 1, 3)
+	if err != nil {
 		t.Fatalf("ApplyMove() error = %v", err)
 	}
-	if !g.Solved() {
+	if !updated.Solved() {
 		t.Error("Solved() = false after Current matches Solution, want true")
+	}
+}
+
+func TestGetReturnsIndependentCopy(t *testing.T) {
+	s := NewStore()
+	g := s.Create(testPuzzle())
+	gameID := g.ID
+
+	// Get a copy from the store
+	copy1, ok := s.Get(gameID)
+	if !ok {
+		t.Fatalf("Get(%q) ok = false, want true", gameID)
+	}
+
+	// Mutate the returned copy directly (this should not affect the store's internal copy)
+	copy1.Current[0][1] = 9
+	copy1.Current[5][5] = 7
+
+	// Get another copy from the store
+	copy2, ok := s.Get(gameID)
+	if !ok {
+		t.Fatalf("Get(%q) ok = false after first mutation, want true", gameID)
+	}
+
+	// The store's internal copy should be unaffected by mutations to copy1
+	if copy2.Current[0][1] != 0 {
+		t.Errorf("After mutating returned copy, store's copy was affected: Current[0][1] = %d, want 0", copy2.Current[0][1])
+	}
+	if copy2.Current[5][5] != 0 {
+		t.Errorf("After mutating returned copy, store's copy was affected: Current[5][5] = %d, want 0", copy2.Current[5][5])
 	}
 }

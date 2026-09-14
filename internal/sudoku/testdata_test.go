@@ -101,3 +101,20 @@ const conflictingGivensGrid = `
 . . . | . . . | . . .
 . . . | . . . | . . .
 `
+
+// aiEscargotPuzzle is "AI Escargot", a puzzle constructed by Arto Inkala
+// and widely documented as one of the hardest known Sudoku puzzles — it
+// requires solving techniques well beyond basic scanning.
+const aiEscargotPuzzle = `
+1 . . | . . 7 | . 9 .
+. 3 . | . 2 . | . . 8
+. . 9 | 6 . . | 5 . .
+------+-------+------
+. . 5 | 3 . . | 9 . .
+. 1 . | . 8 . | . . 2
+6 . . | . . 4 | . . .
+------+-------+------
+3 . . | . . . | . 1 .
+. 4 . | . . . | . . 7
+. . 7 | . . . | 3 . .
+`

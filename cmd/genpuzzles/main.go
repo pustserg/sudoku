@@ -33,6 +33,21 @@ func main() {
 	if *workers < 1 {
 		log.Fatalf("--workers must be at least 1, got %d", *workers)
 	}
+	if *batchSize < 1 {
+		log.Fatalf("--batch-size must be at least 1, got %d", *batchSize)
+	}
+	if *easy < 0 {
+		log.Fatalf("--easy must be at least 0, got %d", *easy)
+	}
+	if *medium < 0 {
+		log.Fatalf("--medium must be at least 0, got %d", *medium)
+	}
+	if *hard < 0 {
+		log.Fatalf("--hard must be at least 0, got %d", *hard)
+	}
+	if *expert < 0 {
+		log.Fatalf("--expert must be at least 0, got %d", *expert)
+	}
 
 	dsn := *databaseURL
 	if dsn == "" {
@@ -86,37 +101,42 @@ func main() {
 
 	ctx := context.Background()
 	start := time.Now()
-	inserted := 0
+	var attempted, inserted int64
 	batch := make([]sudoku.Puzzle, 0, *batchSize)
 	for p := range resultCh {
 		batch = append(batch, p)
 		if len(batch) >= *batchSize {
-			if err := db.InsertPuzzles(ctx, sqlDB, batch); err != nil {
+			n, err := db.InsertPuzzles(ctx, sqlDB, batch)
+			if err != nil {
 				log.Fatalf("insert batch: %v", err)
 			}
-			inserted += len(batch)
+			attempted += int64(len(batch))
+			inserted += n
 			batch = batch[:0]
-			logProgress(inserted, total, start)
+			logProgress(inserted, attempted, int64(total), start)
 		}
 	}
 	if len(batch) > 0 {
-		if err := db.InsertPuzzles(ctx, sqlDB, batch); err != nil {
+		n, err := db.InsertPuzzles(ctx, sqlDB, batch)
+		if err != nil {
 			log.Fatalf("insert final batch: %v", err)
 		}
-		inserted += len(batch)
+		attempted += int64(len(batch))
+		inserted += n
+		logProgress(inserted, attempted, int64(total), start)
 	}
 
-	log.Printf("done: inserted %d/%d puzzles in %s", inserted, total, time.Since(start))
+	log.Printf("done: inserted %d of %d attempted puzzles in %s", inserted, attempted, time.Since(start))
 }
 
-// logProgress logs a progress line every 1000 puzzles inserted, and
-// always on the final batch.
-func logProgress(inserted, total int, start time.Time) {
-	if inserted%1000 != 0 && inserted != total {
-		return
-	}
+// logProgress logs a progress line after every batch insert, reporting
+// both how many puzzles have been attempted (generated and submitted
+// for insertion) and how many rows were actually inserted (attempted
+// minus any cross-worker duplicate givens that were skipped).
+func logProgress(inserted, attempted, total int64, start time.Time) {
 	elapsed := time.Since(start)
-	log.Printf("inserted %d/%d puzzles (%.1f/sec)", inserted, total, float64(inserted)/elapsed.Seconds())
+	log.Printf("inserted %d of %d attempted (%d/%d total) (%.1f/sec)",
+		inserted, attempted, attempted, total, float64(attempted)/elapsed.Seconds())
 }
 
 // randomSeed returns a cryptographically random uint64, used to seed each

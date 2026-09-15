@@ -1,31 +1,13 @@
 {{define "board"}}
-<div id="board">
-{{if .Game.Solved}}<p><strong>Solved!</strong></p>{{end}}
-<table border="1">
+<div id="board" class="board-wrap">
+{{if .Game.Solved}}<div class="solved-banner">🎉 Solved!</div>{{end}}
+<table class="grid">
 {{range .Cells}}
   <tr>
   {{range .}}
-    <td>
-    {{if .Given}}
-      {{if .Value}}{{.Value}}{{else}}&nbsp;{{end}}
-    {{else}}
-      <form hx-post="/play/{{$.Game.ID}}/moves" hx-trigger="change" hx-target="#board" hx-swap="outerHTML">
-        <input type="hidden" name="row" value="{{.Row}}">
-        <input type="hidden" name="col" value="{{.Col}}">
-        <select name="value">
-          <option value="0" {{if eq .Value 0}}selected{{end}}>-</option>
-          <option value="1" {{if eq .Value 1}}selected{{end}}>1</option>
-          <option value="2" {{if eq .Value 2}}selected{{end}}>2</option>
-          <option value="3" {{if eq .Value 3}}selected{{end}}>3</option>
-          <option value="4" {{if eq .Value 4}}selected{{end}}>4</option>
-          <option value="5" {{if eq .Value 5}}selected{{end}}>5</option>
-          <option value="6" {{if eq .Value 6}}selected{{end}}>6</option>
-          <option value="7" {{if eq .Value 7}}selected{{end}}>7</option>
-          <option value="8" {{if eq .Value 8}}selected{{end}}>8</option>
-          <option value="9" {{if eq .Value 9}}selected{{end}}>9</option>
-        </select>
-      </form>
-    {{end}}
+    <td class="cell{{if .Given}} given{{end}}" data-row="{{.Row}}" data-col="{{.Col}}" data-value="{{.Value}}">
+      <div class="cell-content">{{if .Value}}{{.Value}}{{end}}</div>
+      <div class="cell-notes"></div>
     </td>
   {{end}}
   </tr>
@@ -39,12 +21,399 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sudoku</title>
 <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+<style>
+  :root {
+    --blue: #3b5db8;
+    --blue-dark: #1a2b4c;
+    --blue-light: #eef4ff;
+    --blue-select: #bcd4f6;
+    --blue-peer: #dbe7fb;
+    --blue-same: #cfe0fb;
+    --border: #b7c4dd;
+    --bg: #f4f7fc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--blue-dark);
+    margin: 0;
+    padding: 24px 16px;
+  }
+  .page {
+    max-width: 780px;
+    margin: 0 auto;
+  }
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .topbar h1 {
+    font-size: 1.4rem;
+    margin: 0;
+  }
+  .difficulty-badge {
+    background: var(--blue-light);
+    color: var(--blue);
+    border-radius: 999px;
+    padding: 4px 14px;
+    font-weight: 600;
+    font-size: 0.85rem;
+    text-transform: capitalize;
+  }
+  .layout {
+    display: flex;
+    gap: 28px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .solved-banner {
+    text-align: center;
+    background: #e4f7e9;
+    color: #1f7a3f;
+    border-radius: 10px;
+    padding: 10px;
+    margin-bottom: 12px;
+    font-weight: 700;
+  }
+  .grid {
+    border-collapse: collapse;
+    background: #fff;
+    border: 3px solid var(--blue-dark);
+    border-radius: 4px;
+    table-layout: fixed;
+    width: min(92vw, 468px);
+    height: min(92vw, 468px);
+  }
+  .cell {
+    width: 11.11%;
+    height: 11.11%;
+    text-align: center;
+    vertical-align: middle;
+    border: 1px solid var(--border);
+    position: relative;
+    cursor: pointer;
+    user-select: none;
+  }
+  .cell:nth-child(3n) { border-right: 2px solid var(--blue-dark); }
+  .grid tr:nth-child(3n) .cell { border-bottom: 2px solid var(--blue-dark); }
+  .cell-content {
+    font-size: clamp(1rem, 4vw, 1.6rem);
+    font-weight: 500;
+    color: var(--blue);
+    line-height: 1;
+  }
+  .cell.given .cell-content {
+    color: var(--blue-dark);
+    font-weight: 700;
+  }
+  .cell.peer { background: var(--blue-light); }
+  .cell.same-value:not(.selected) { background: var(--blue-same); }
+  .cell.selected { background: var(--blue-select); }
+  .cell.given.selected { background: #d7e3f7; }
+  .cell-notes {
+    position: absolute;
+    inset: 2px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    pointer-events: none;
+  }
+  .cell-notes span {
+    font-size: clamp(0.5rem, 1.6vw, 0.65rem);
+    color: #7188b8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .side-panel {
+    width: 220px;
+    max-width: 92vw;
+  }
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    background: #fff;
+    border-radius: 10px;
+    padding: 10px 16px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(26,43,76,0.08);
+  }
+  .stat { text-align: center; }
+  .stat .label { font-size: 0.7rem; color: #7188b8; text-transform: uppercase; }
+  .stat .value { font-size: 1.1rem; font-weight: 700; }
+  .pad-tools {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .tool-btn {
+    flex: 1;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 0;
+    font-size: 1.1rem;
+    cursor: pointer;
+    color: var(--blue-dark);
+  }
+  .tool-btn.active {
+    background: var(--blue);
+    color: #fff;
+    border-color: var(--blue);
+  }
+  .pad {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  .pad button {
+    background: var(--blue-light);
+    border: none;
+    border-radius: 10px;
+    padding: 16px 0;
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--blue);
+    cursor: pointer;
+  }
+  .pad button:hover { background: var(--blue-same); }
+  .new-game-link {
+    display: block;
+    text-align: center;
+    margin-top: 20px;
+    background: var(--blue);
+    color: #fff;
+    text-decoration: none;
+    padding: 12px 0;
+    border-radius: 10px;
+    font-weight: 600;
+  }
+</style>
 </head>
 <body>
-<h1>Sudoku ({{.DifficultyName}})</h1>
-{{template "board" .}}
+<div class="page">
+  <div class="topbar">
+    <h1>Sudoku</h1>
+    <span class="difficulty-badge">{{.DifficultyName}}</span>
+  </div>
+  <div class="layout">
+    {{template "board" .}}
+    <div class="side-panel">
+      <div class="stat-row">
+        <div class="stat"><div class="label">Mode</div><div class="value" id="mode-label">Fill</div></div>
+      </div>
+      <div class="pad-tools">
+        <button type="button" class="tool-btn" id="erase-btn" title="Erase">⌫</button>
+        <button type="button" class="tool-btn" id="notes-btn" title="Notes">✏️</button>
+      </div>
+      <div class="pad">
+        <button type="button" data-digit="1">1</button>
+        <button type="button" data-digit="2">2</button>
+        <button type="button" data-digit="3">3</button>
+        <button type="button" data-digit="4">4</button>
+        <button type="button" data-digit="5">5</button>
+        <button type="button" data-digit="6">6</button>
+        <button type="button" data-digit="7">7</button>
+        <button type="button" data-digit="8">8</button>
+        <button type="button" data-digit="9">9</button>
+      </div>
+      <a class="new-game-link" href="/">New Game</a>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  var gameID = {{.Game.ID}};
+  var notesKey = "sudoku-notes-" + gameID;
+  var notesMode = false;
+  var selected = null; // {row, col}
+
+  function loadNotes() {
+    try {
+      return JSON.parse(localStorage.getItem(notesKey) || "{}");
+    } catch (e) {
+      return {};
+    }
+  }
+  function saveNotes(notes) {
+    try {
+      localStorage.setItem(notesKey, JSON.stringify(notes));
+    } catch (e) {}
+  }
+  function cellKey(row, col) { return row + "-" + col; }
+
+  function boxOf(row, col) {
+    return Math.floor(row / 3) * 3 + Math.floor(col / 3);
+  }
+
+  function allCells() {
+    return document.querySelectorAll("#board .cell");
+  }
+
+  function applyNotes() {
+    var notes = loadNotes();
+    allCells().forEach(function (cell) {
+      var row = cell.dataset.row, col = cell.dataset.col;
+      var value = parseInt(cell.dataset.value, 10);
+      var notesEl = cell.querySelector(".cell-notes");
+      notesEl.innerHTML = "";
+      if (value) return; // a filled cell never shows notes
+      var marks = notes[cellKey(row, col)] || [];
+      for (var d = 1; d <= 9; d++) {
+        var span = document.createElement("span");
+        span.textContent = marks.indexOf(d) !== -1 ? d : "";
+        notesEl.appendChild(span);
+      }
+    });
+  }
+
+  function clearNotesForCell(row, col) {
+    var notes = loadNotes();
+    delete notes[cellKey(row, col)];
+    saveNotes(notes);
+  }
+
+  function toggleNoteForSelected(digit) {
+    if (!selected) return;
+    var notes = loadNotes();
+    var key = cellKey(selected.row, selected.col);
+    var marks = notes[key] || [];
+    var idx = marks.indexOf(digit);
+    if (idx === -1) {
+      marks.push(digit);
+    } else {
+      marks.splice(idx, 1);
+    }
+    notes[key] = marks;
+    saveNotes(notes);
+    applyNotes();
+  }
+
+  function applySelection() {
+    var cells = allCells();
+    cells.forEach(function (cell) { cell.classList.remove("selected", "peer", "same-value"); });
+    if (!selected) return;
+    var selRow = String(selected.row), selCol = String(selected.col);
+    var selBox = boxOf(selected.row, selected.col);
+    var selectedCellEl = null;
+    var selectedValue = 0;
+    cells.forEach(function (cell) {
+      var row = parseInt(cell.dataset.row, 10), col = parseInt(cell.dataset.col, 10);
+      if (cell.dataset.row === selRow && cell.dataset.col === selCol) {
+        selectedCellEl = cell;
+        selectedValue = parseInt(cell.dataset.value, 10);
+      }
+    });
+    cells.forEach(function (cell) {
+      var row = parseInt(cell.dataset.row, 10), col = parseInt(cell.dataset.col, 10);
+      var isSelf = cell.dataset.row === selRow && cell.dataset.col === selCol;
+      var isPeer = row === selected.row || col === selected.col || boxOf(row, col) === selBox;
+      if (isSelf) {
+        cell.classList.add("selected");
+      } else if (isPeer) {
+        cell.classList.add("peer");
+      }
+      if (selectedValue && parseInt(cell.dataset.value, 10) === selectedValue) {
+        cell.classList.add("same-value");
+      }
+    });
+  }
+
+  function selectCell(row, col) {
+    selected = { row: row, col: col };
+    applySelection();
+  }
+
+  function submitValue(value) {
+    if (!selected) return;
+    if (value !== 0) clearNotesForCell(selected.row, selected.col);
+    htmx.ajax("POST", "/play/" + gameID + "/moves", {
+      target: "#board",
+      swap: "outerHTML",
+      values: { row: selected.row, col: selected.col, value: value }
+    });
+  }
+
+  function onDigit(digit) {
+    if (!selected) return;
+    var cell = findCell(selected.row, selected.col);
+    if (cell && cell.classList.contains("given")) return;
+    if (notesMode) {
+      toggleNoteForSelected(digit);
+    } else {
+      submitValue(digit);
+    }
+  }
+
+  function findCell(row, col) {
+    return document.querySelector('#board .cell[data-row="' + row + '"][data-col="' + col + '"]');
+  }
+
+  function setNotesMode(on) {
+    notesMode = on;
+    document.getElementById("notes-btn").classList.toggle("active", on);
+    document.getElementById("mode-label").textContent = on ? "Notes" : "Fill";
+  }
+
+  document.addEventListener("click", function (e) {
+    var cell = e.target.closest(".cell");
+    if (cell && document.getElementById("board").contains(cell)) {
+      selectCell(parseInt(cell.dataset.row, 10), parseInt(cell.dataset.col, 10));
+      return;
+    }
+    var digitBtn = e.target.closest(".pad button[data-digit]");
+    if (digitBtn) {
+      onDigit(parseInt(digitBtn.dataset.digit, 10));
+      return;
+    }
+    if (e.target.closest("#erase-btn")) {
+      if (selected) {
+        clearNotesForCell(selected.row, selected.col);
+        applyNotes();
+        submitValue(0);
+      }
+      return;
+    }
+    if (e.target.closest("#notes-btn")) {
+      setNotesMode(!notesMode);
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (!selected) return;
+    if (e.key >= "1" && e.key <= "9") {
+      onDigit(parseInt(e.key, 10));
+    } else if (e.key === "Backspace" || e.key === "Delete" || e.key === "0") {
+      clearNotesForCell(selected.row, selected.col);
+      applyNotes();
+      submitValue(0);
+    } else if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      var dr = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+      var dc = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      var row = Math.min(8, Math.max(0, selected.row + dr));
+      var col = Math.min(8, Math.max(0, selected.col + dc));
+      selectCell(row, col);
+      e.preventDefault();
+    }
+  });
+
+  document.body.addEventListener("htmx:afterSwap", function () {
+    applyNotes();
+    applySelection();
+  });
+
+  applyNotes();
+})();
+</script>
 </body>
 </html>
 {{end}}

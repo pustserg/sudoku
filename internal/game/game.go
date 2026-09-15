@@ -15,11 +15,13 @@ import (
 
 // Game is one in-progress (or completed) puzzle session.
 type Game struct {
-	ID         string
-	Givens     sudoku.Grid // original clues; never mutated after creation
-	Current    sudoku.Grid // the player's working grid
-	Solution   sudoku.Grid
-	Difficulty sudoku.Difficulty
+	ID          string
+	Givens      sudoku.Grid // original clues; never mutated after creation
+	Current     sudoku.Grid // the player's working grid
+	Solution    sudoku.Grid
+	Difficulty  sudoku.Difficulty
+	Mistakes    int
+	MaxMistakes int
 }
 
 // Solved reports whether Current matches Solution exactly.
@@ -27,10 +29,26 @@ func (g *Game) Solved() bool {
 	return g.Current == g.Solution
 }
 
+// Failed reports whether the player has used up all their allowed
+// mistakes for this game.
+func (g *Game) Failed() bool {
+	return g.Mistakes >= g.MaxMistakes
+}
+
+// maxMistakesFor returns the mistake allowance for a given difficulty:
+// 5 for Easy/Medium, 3 for Hard/Expert.
+func maxMistakesFor(d sudoku.Difficulty) int {
+	if d == sudoku.Hard || d == sudoku.Expert {
+		return 3
+	}
+	return 5
+}
+
 var (
 	ErrOutOfRange = errors.New("row/col must be 0-8 and value must be 0-9")
 	ErrGivenCell  = errors.New("cannot change a given cell")
 	ErrNotFound   = errors.New("game not found")
+	ErrGameOver   = errors.New("game is over: mistake limit reached")
 )
 
 // Store holds all in-progress games in memory, safe for concurrent use.
@@ -48,11 +66,12 @@ func NewStore() *Store {
 // Returns an independent copy to prevent data races from concurrent access.
 func (s *Store) Create(p sudoku.Puzzle) *Game {
 	g := &Game{
-		ID:         newID(),
-		Givens:     p.Givens,
-		Current:    p.Givens,
-		Solution:   p.Solution,
-		Difficulty: p.Difficulty,
+		ID:          newID(),
+		Givens:      p.Givens,
+		Current:     p.Givens,
+		Solution:    p.Solution,
+		Difficulty:  p.Difficulty,
+		MaxMistakes: maxMistakesFor(p.Difficulty),
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -77,7 +96,11 @@ func (s *Store) Get(id string) (*Game, bool) {
 // ApplyMove sets Current[row][col] = value (0 clears the cell) on the
 // game with the given id, and returns the updated Game. value must be
 // 0-9; row and col must be 0-8. A cell that is non-zero in Givens cannot
-// be changed. Returns an independent copy to prevent data races from concurrent access.
+// be changed. Placing a non-zero value that doesn't match Solution still
+// fills the cell (so the player can see what they entered) but counts as
+// a mistake; once the game's mistake allowance is used up, further moves
+// are rejected with ErrGameOver. Returns an independent copy to prevent
+// data races from concurrent access.
 func (s *Store) ApplyMove(id string, row, col, value int) (*Game, error) {
 	if row < 0 || row > 8 || col < 0 || col > 8 || value < 0 || value > 9 {
 		return nil, ErrOutOfRange
@@ -90,8 +113,14 @@ func (s *Store) ApplyMove(id string, row, col, value int) (*Game, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
+	if g.Failed() {
+		return nil, ErrGameOver
+	}
 	if g.Givens[row][col] != 0 {
 		return nil, ErrGivenCell
+	}
+	if value != 0 && value != g.Solution[row][col] {
+		g.Mistakes++
 	}
 	g.Current[row][col] = value
 	copy := *g

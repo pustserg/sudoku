@@ -1,11 +1,13 @@
 {{define "board"}}
-<div id="board" class="board-wrap">
-{{if .Game.Solved}}<div class="solved-banner">🎉 Solved!</div>{{end}}
+<div id="board" class="board-wrap" data-game-id="{{.ID}}" data-locked="{{if or .Solved .Failed}}1{{else}}0{{end}}">
+{{if .Solved}}<div class="solved-banner">🎉 Solved!</div>{{end}}
+{{if .Failed}}<div class="over-banner">Game Over — out of mistakes. <a href="/">New Game</a></div>{{end}}
+<div class="mistakes-row">Mistakes: {{.Mistakes}}/{{.MaxMistakes}}</div>
 <table class="grid">
 {{range .Cells}}
   <tr>
   {{range .}}
-    <td class="cell{{if .Given}} given{{end}}" data-row="{{.Row}}" data-col="{{.Col}}" data-value="{{.Value}}">
+    <td class="cell{{if .Given}} given{{end}}{{if .Wrong}} wrong{{end}}" data-row="{{.Row}}" data-col="{{.Col}}" data-value="{{.Value}}">
       <div class="cell-content">{{if .Value}}{{.Value}}{{end}}</div>
       <div class="cell-notes"></div>
     </td>
@@ -83,6 +85,29 @@
     padding: 10px;
     margin-bottom: 12px;
     font-weight: 700;
+  }
+  .over-banner {
+    text-align: center;
+    background: #fbe4e4;
+    color: #a12626;
+    border-radius: 10px;
+    padding: 10px;
+    margin-bottom: 12px;
+    font-weight: 700;
+  }
+  .over-banner a {
+    color: #a12626;
+    text-decoration: underline;
+  }
+  .mistakes-row {
+    text-align: right;
+    font-size: 0.85rem;
+    color: #7188b8;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .cell.wrong .cell-content {
+    color: #d64545;
   }
   .grid {
     border-collapse: collapse;
@@ -232,7 +257,7 @@
 </div>
 <script>
 (function () {
-  var gameID = {{.Game.ID}};
+  var gameID = {{.ID}};
   var notesKey = "sudoku-notes-" + gameID;
   var notesMode = false;
   var selected = null; // {row, col}
@@ -333,8 +358,13 @@
     applySelection();
   }
 
+  function isLocked() {
+    var board = document.getElementById("board");
+    return !board || board.dataset.locked === "1";
+  }
+
   function submitValue(value) {
-    if (!selected) return;
+    if (!selected || isLocked()) return;
     if (value !== 0) clearNotesForCell(selected.row, selected.col);
     htmx.ajax("POST", "/play/" + gameID + "/moves", {
       target: "#board",
@@ -344,7 +374,7 @@
   }
 
   function onDigit(digit) {
-    if (!selected) return;
+    if (!selected || isLocked()) return;
     var cell = findCell(selected.row, selected.col);
     if (cell && cell.classList.contains("given")) return;
     if (notesMode) {
@@ -356,6 +386,28 @@
 
   function findCell(row, col) {
     return document.querySelector('#board .cell[data-row="' + row + '"][data-col="' + col + '"]');
+  }
+
+  function clearDigitFromPeerNotes(row, col, digit) {
+    var box = boxOf(row, col);
+    var notes = loadNotes();
+    var changed = false;
+    for (var r = 0; r < 9; r++) {
+      for (var c = 0; c < 9; c++) {
+        if (r === row && c === col) continue;
+        if (r !== row && c !== col && boxOf(r, c) !== box) continue;
+        var key = cellKey(r, c);
+        var marks = notes[key];
+        if (!marks) continue;
+        var idx = marks.indexOf(digit);
+        if (idx !== -1) {
+          marks.splice(idx, 1);
+          notes[key] = marks;
+          changed = true;
+        }
+      }
+    }
+    if (changed) saveNotes(notes);
   }
 
   function setNotesMode(on) {
@@ -376,7 +428,7 @@
       return;
     }
     if (e.target.closest("#erase-btn")) {
-      if (selected) {
+      if (selected && !isLocked()) {
         clearNotesForCell(selected.row, selected.col);
         applyNotes();
         submitValue(0);
@@ -393,6 +445,7 @@
     if (e.key >= "1" && e.key <= "9") {
       onDigit(parseInt(e.key, 10));
     } else if (e.key === "Backspace" || e.key === "Delete" || e.key === "0") {
+      if (isLocked()) return;
       clearNotesForCell(selected.row, selected.col);
       applyNotes();
       submitValue(0);
@@ -407,6 +460,15 @@
   });
 
   document.body.addEventListener("htmx:afterSwap", function () {
+    if (selected) {
+      var cell = findCell(selected.row, selected.col);
+      if (cell) {
+        var value = parseInt(cell.dataset.value, 10);
+        if (value && !cell.classList.contains("wrong") && !cell.classList.contains("given")) {
+          clearDigitFromPeerNotes(selected.row, selected.col, value);
+        }
+      }
+    }
     applyNotes();
     applySelection();
   });

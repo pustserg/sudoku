@@ -178,3 +178,59 @@ func TestSubmitMoveUnknownGame(t *testing.T) {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }
+
+func TestSubmitMoveWrongValueIncrementsMistakes(t *testing.T) {
+	h, store := testHandler()
+	var givens sudoku.Grid
+	givens[0][0] = 5
+	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy}) // solution[0][1] == 0
+
+	body := `{"row":0,"col":1,"value":9}` // wrong: solution wants 0 here
+	req := httptest.NewRequest(http.MethodPost, "/api/games/"+g.ID+"/moves", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	mux := newMux(h)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var state gameState
+	if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if state.Mistakes != 1 {
+		t.Errorf("mistakes = %d, want 1", state.Mistakes)
+	}
+	if state.MaxMistakes != 5 {
+		t.Errorf("maxMistakes = %d, want 5 for Easy", state.MaxMistakes)
+	}
+	if state.Failed {
+		t.Errorf("failed = true after 1 of 5 mistakes, want false")
+	}
+}
+
+func TestSubmitMoveAfterGameOver(t *testing.T) {
+	h, store := testHandler()
+	var givens sudoku.Grid
+	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Hard}) // MaxMistakes == 3, solution[0][1] == 0
+	mux := newMux(h)
+
+	for i := 0; i < 3; i++ {
+		body := `{"row":0,"col":1,"value":9}` // always wrong
+		req := httptest.NewRequest(http.MethodPost, "/api/games/"+g.ID+"/moves", bytes.NewBufferString(body))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("mistake %d: status = %d, want %d (body: %s)", i+1, rec.Code, http.StatusOK, rec.Body.String())
+		}
+	}
+
+	body := `{"row":0,"col":2,"value":1}`
+	req := httptest.NewRequest(http.MethodPost, "/api/games/"+g.ID+"/moves", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status after game over = %d, want %d (body: %s)", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}

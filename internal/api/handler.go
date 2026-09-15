@@ -31,20 +31,26 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 type gameState struct {
-	ID         string      `json:"id"`
-	Givens     sudoku.Grid `json:"givens"`
-	Current    sudoku.Grid `json:"current"`
-	Difficulty string      `json:"difficulty"`
-	Solved     bool        `json:"solved"`
+	ID          string      `json:"id"`
+	Givens      sudoku.Grid `json:"givens"`
+	Current     sudoku.Grid `json:"current"`
+	Difficulty  string      `json:"difficulty"`
+	Solved      bool        `json:"solved"`
+	Mistakes    int         `json:"mistakes"`
+	MaxMistakes int         `json:"maxMistakes"`
+	Failed      bool        `json:"failed"`
 }
 
 func toGameState(g *game.Game) gameState {
 	return gameState{
-		ID:         g.ID,
-		Givens:     g.Givens,
-		Current:    g.Current,
-		Difficulty: game.DifficultyName(g.Difficulty),
-		Solved:     g.Solved(),
+		ID:          g.ID,
+		Givens:      g.Givens,
+		Current:     g.Current,
+		Difficulty:  game.DifficultyName(g.Difficulty),
+		Solved:      g.Solved(),
+		Mistakes:    g.Mistakes,
+		MaxMistakes: g.MaxMistakes,
+		Failed:      g.Failed(),
 	}
 }
 
@@ -108,6 +114,8 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "game not found")
 	case errors.Is(err, game.ErrOutOfRange), errors.Is(err, game.ErrGivenCell):
 		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, game.ErrGameOver):
+		writeError(w, http.StatusConflict, err.Error())
 	default:
 		log.Printf("api: unexpected ApplyMove error: %v", err)
 		writeError(w, http.StatusInternalServerError, "could not apply move")

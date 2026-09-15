@@ -66,13 +66,21 @@ type cellView struct {
 	Row, Col int
 	Value    int
 	Given    bool
+	// Wrong is true when this cell holds a player-entered value that
+	// doesn't match the puzzle's solution. The solution digit itself is
+	// never exposed to the template/client — only this boolean.
+	Wrong bool
 }
 
 // boardView is the template data for both the full board page and the
 // htmx board fragment.
 type boardView struct {
-	Game           *game.Game
+	ID             string
 	DifficultyName string
+	Solved         bool
+	Failed         bool
+	Mistakes       int
+	MaxMistakes    int
 	Cells          [9][9]cellView
 }
 
@@ -80,15 +88,26 @@ func newBoardView(g *game.Game) boardView {
 	var cells [9][9]cellView
 	for r := 0; r < 9; r++ {
 		for c := 0; c < 9; c++ {
+			given := g.Givens[r][c] != 0
+			value := g.Current[r][c]
 			cells[r][c] = cellView{
 				Row:   r,
 				Col:   c,
-				Value: g.Current[r][c],
-				Given: g.Givens[r][c] != 0,
+				Value: value,
+				Given: given,
+				Wrong: !given && value != 0 && value != g.Solution[r][c],
 			}
 		}
 	}
-	return boardView{Game: g, DifficultyName: game.DifficultyName(g.Difficulty), Cells: cells}
+	return boardView{
+		ID:             g.ID,
+		DifficultyName: game.DifficultyName(g.Difficulty),
+		Solved:         g.Solved(),
+		Failed:         g.Failed(),
+		Mistakes:       g.Mistakes,
+		MaxMistakes:    g.MaxMistakes,
+		Cells:          cells,
+	}
 }
 
 func (h *Handler) showBoard(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +143,8 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	case errors.Is(err, game.ErrOutOfRange), errors.Is(err, game.ErrGivenCell):
 		http.Error(w, err.Error(), http.StatusBadRequest)
+	case errors.Is(err, game.ErrGameOver):
+		http.Error(w, err.Error(), http.StatusConflict)
 	default:
 		log.Printf("web: unexpected ApplyMove error: %v", err)
 		http.Error(w, "could not apply move", http.StatusInternalServerError)

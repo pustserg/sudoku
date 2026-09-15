@@ -245,8 +245,12 @@ func TestStoreConcurrentAccess(t *testing.T) {
 					t.Errorf("Get(%q) ok = false for a game just created, want true", g.ID)
 				}
 
-				if _, err := s.ApplyMove(g.ID, 0, 1, (j%9)+1); err != nil {
-					t.Errorf("ApplyMove(%q) error = %v, want nil", g.ID, err)
+				// testPuzzle()'s solution has 0 at (0,1) unless the value
+				// happens to be 3, so most of these count as mistakes;
+				// tolerate ErrGameOver once a game's mistake cap is hit,
+				// which is now correct behavior, not a race.
+				if _, err := s.ApplyMove(g.ID, 0, 1, (j%9)+1); err != nil && err != ErrGameOver {
+					t.Errorf("ApplyMove(%q) error = %v, want nil or ErrGameOver", g.ID, err)
 				}
 
 				// Concurrently read and write the shared game to
@@ -255,8 +259,8 @@ func TestStoreConcurrentAccess(t *testing.T) {
 				if _, ok := s.Get(sharedGame.ID); !ok {
 					t.Errorf("Get(%q) ok = false for shared game, want true", sharedGame.ID)
 				}
-				if _, err := s.ApplyMove(sharedGame.ID, 1, 1, (j%9)+1); err != nil {
-					t.Errorf("ApplyMove(%q) error = %v, want nil", sharedGame.ID, err)
+				if _, err := s.ApplyMove(sharedGame.ID, 1, 1, (j%9)+1); err != nil && err != ErrGameOver {
+					t.Errorf("ApplyMove(%q) error = %v, want nil or ErrGameOver", sharedGame.ID, err)
 				}
 			}
 		}(i)
@@ -274,5 +278,96 @@ func TestStoreConcurrentAccess(t *testing.T) {
 		if got.Current[1][1] == 0 {
 			t.Errorf("shared game %q Current[1][1] = 0 after concurrent ApplyMove calls, want a value written by some goroutine", g.ID)
 		}
+	}
+}
+
+func TestCreateSetsMaxMistakesByDifficulty(t *testing.T) {
+	tests := []struct {
+		d    sudoku.Difficulty
+		want int
+	}{
+		{sudoku.Easy, 5},
+		{sudoku.Medium, 5},
+		{sudoku.Hard, 3},
+		{sudoku.Expert, 3},
+	}
+	for _, tt := range tests {
+		p := testPuzzle()
+		p.Difficulty = tt.d
+		s := NewStore()
+		g := s.Create(p)
+		if g.MaxMistakes != tt.want {
+			t.Errorf("Create() with difficulty %v: MaxMistakes = %d, want %d", tt.d, g.MaxMistakes, tt.want)
+		}
+	}
+}
+
+func TestApplyMoveWrongValueCountsMistake(t *testing.T) {
+	s := NewStore()
+	g := s.Create(testPuzzle()) // solution[0][1] == 3
+
+	updated, err := s.ApplyMove(g.ID, 0, 1, 9) // wrong: solution wants 3
+	if err != nil {
+		t.Fatalf("ApplyMove() error = %v, want nil", err)
+	}
+	if updated.Mistakes != 1 {
+		t.Errorf("Mistakes = %d, want 1 after one wrong entry", updated.Mistakes)
+	}
+	if updated.Current[0][1] != 9 {
+		t.Errorf("Current[0][1] = %d, want 9 (wrong entries still fill the cell)", updated.Current[0][1])
+	}
+}
+
+func TestApplyMoveCorrectValueDoesNotCountMistake(t *testing.T) {
+	s := NewStore()
+	g := s.Create(testPuzzle()) // solution[0][1] == 3
+
+	updated, err := s.ApplyMove(g.ID, 0, 1, 3) // correct
+	if err != nil {
+		t.Fatalf("ApplyMove() error = %v, want nil", err)
+	}
+	if updated.Mistakes != 0 {
+		t.Errorf("Mistakes = %d, want 0 after a correct entry", updated.Mistakes)
+	}
+}
+
+func TestApplyMoveClearingCellDoesNotCountMistake(t *testing.T) {
+	s := NewStore()
+	g := s.Create(testPuzzle())
+
+	if _, err := s.ApplyMove(g.ID, 0, 1, 9); err != nil {
+		t.Fatalf("ApplyMove() error = %v", err)
+	}
+	updated, err := s.ApplyMove(g.ID, 0, 1, 0) // erase
+	if err != nil {
+		t.Fatalf("ApplyMove() error = %v", err)
+	}
+	if updated.Mistakes != 1 {
+		t.Errorf("Mistakes = %d, want 1 (erasing should not add a mistake, and should not remove the earlier one)", updated.Mistakes)
+	}
+}
+
+func TestApplyMoveRejectedAfterGameOver(t *testing.T) {
+	s := NewStore()
+	p := testPuzzle()
+	p.Difficulty = sudoku.Hard // MaxMistakes == 3
+	g := s.Create(p)
+
+	for i := 0; i < 3; i++ {
+		if _, err := s.ApplyMove(g.ID, 0, 1, 9); err != nil { // always wrong
+			t.Fatalf("ApplyMove() error = %v on mistake %d", err, i+1)
+		}
+	}
+
+	got, ok := s.Get(g.ID)
+	if !ok {
+		t.Fatalf("Get() ok = false")
+	}
+	if !got.Failed() {
+		t.Fatalf("Failed() = false after 3 mistakes with MaxMistakes=3, want true")
+	}
+
+	if _, err := s.ApplyMove(g.ID, 0, 1, 3); err != ErrGameOver {
+		t.Errorf("ApplyMove() after game over: error = %v, want ErrGameOver", err)
 	}
 }

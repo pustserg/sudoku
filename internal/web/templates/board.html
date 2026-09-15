@@ -1,0 +1,50 @@
+{{define "board"}}
+<div id="board">
+{{if .Game.Solved}}<p><strong>Solved!</strong></p>{{end}}
+<table border="1">
+{{range .Cells}}
+  <tr>
+  {{range .}}
+    <td>
+    {{if .Given}}
+      {{if .Value}}{{.Value}}{{else}}&nbsp;{{end}}
+    {{else}}
+      <form hx-post="/play/{{$.Game.ID}}/moves" hx-trigger="change" hx-target="#board" hx-swap="outerHTML">
+        <input type="hidden" name="row" value="{{.Row}}">
+        <input type="hidden" name="col" value="{{.Col}}">
+        <select name="value">
+          <option value="0" {{if eq .Value 0}}selected{{end}}>-</option>
+          <option value="1" {{if eq .Value 1}}selected{{end}}>1</option>
+          <option value="2" {{if eq .Value 2}}selected{{end}}>2</option>
+          <option value="3" {{if eq .Value 3}}selected{{end}}>3</option>
+          <option value="4" {{if eq .Value 4}}selected{{end}}>4</option>
+          <option value="5" {{if eq .Value 5}}selected{{end}}>5</option>
+          <option value="6" {{if eq .Value 6}}selected{{end}}>6</option>
+          <option value="7" {{if eq .Value 7}}selected{{end}}>7</option>
+          <option value="8" {{if eq .Value 8}}selected{{end}}>8</option>
+          <option value="9" {{if eq .Value 9}}selected{{end}}>9</option>
+        </select>
+      </form>
+    {{end}}
+    </td>
+  {{end}}
+  </tr>
+{{end}}
+</table>
+</div>
+{{end}}
+
+{{define "boardPage"}}
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sudoku</title>
+<script src="https://unpkg.com/htmx.org@2.0.3"></script>
+</head>
+<body>
+<h1>Sudoku ({{.DifficultyName}})</h1>
+{{template "board" .}}
+</body>
+</html>
+{{end}}

@@ -18,9 +18,10 @@ func TestRandomPuzzle(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Two distinct Easy puzzles so we can confirm RandomPuzzle can
-	// return either one (not proof of true randomness, just that it
-	// isn't hardcoded to the first row).
+	// Two distinct Easy puzzles so we can confirm RandomPuzzle actually
+	// varies which one it returns across calls (not proof of true
+	// randomness, just that it isn't hardcoded to always return the
+	// same row).
 	var gridA, gridB sudoku.Grid
 	gridA[0][0] = 2
 	gridB[0][0] = 3
@@ -49,8 +50,8 @@ func TestRandomPuzzle(t *testing.T) {
 		}
 		seen[p.Givens] = true
 	}
-	if len(seen) == 0 {
-		t.Fatal("RandomPuzzle() never returned a recognizable fixture")
+	if len(seen) < 2 {
+		t.Fatalf("RandomPuzzle() returned only %d distinct puzzle(s) across 20 calls, want both fixtures represented (got %v)", len(seen), seen)
 	}
 }
 

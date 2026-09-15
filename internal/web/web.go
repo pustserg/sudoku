@@ -3,6 +3,7 @@ package web
 
 import (
 	"embed"
+	"errors"
 	"html/template"
 	"log"
 	"net/http"
@@ -119,9 +120,12 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 		if err := templates.ExecuteTemplate(w, "board", newBoardView(g)); err != nil {
 			log.Printf("web: render board fragment: %v", err)
 		}
-	case err == game.ErrNotFound:
+	case errors.Is(err, game.ErrNotFound):
 		http.NotFound(w, r)
-	default: // ErrOutOfRange, ErrGivenCell
+	case errors.Is(err, game.ErrOutOfRange), errors.Is(err, game.ErrGivenCell):
 		http.Error(w, err.Error(), http.StatusBadRequest)
+	default:
+		log.Printf("web: unexpected ApplyMove error: %v", err)
+		http.Error(w, "could not apply move", http.StatusInternalServerError)
 	}
 }

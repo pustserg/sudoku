@@ -1,6 +1,7 @@
 package game
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/pustserg/sudoku/internal/sudoku"
@@ -156,5 +157,122 @@ func TestGetReturnsIndependentCopy(t *testing.T) {
 	}
 	if copy2.Current[5][5] != 0 {
 		t.Errorf("After mutating returned copy, store's copy was affected: Current[5][5] = %d, want 0", copy2.Current[5][5])
+	}
+}
+
+func TestCreateReturnsIndependentCopy(t *testing.T) {
+	s := NewStore()
+	g := s.Create(testPuzzle())
+	gameID := g.ID
+
+	// Mutate the copy returned by Create directly.
+	g.Current[0][1] = 9
+	g.Current[5][5] = 7
+
+	// A fresh Get should not reflect that mutation.
+	got, ok := s.Get(gameID)
+	if !ok {
+		t.Fatalf("Get(%q) ok = false, want true", gameID)
+	}
+	if got.Current[0][1] != 0 {
+		t.Errorf("After mutating Create's returned copy, store's copy was affected: Current[0][1] = %d, want 0", got.Current[0][1])
+	}
+	if got.Current[5][5] != 0 {
+		t.Errorf("After mutating Create's returned copy, store's copy was affected: Current[5][5] = %d, want 0", got.Current[5][5])
+	}
+}
+
+func TestApplyMoveReturnsIndependentCopy(t *testing.T) {
+	s := NewStore()
+	g := s.Create(testPuzzle())
+
+	updated, err := s.ApplyMove(g.ID, 0, 1, 3)
+	if err != nil {
+		t.Fatalf("ApplyMove() error = %v, want nil", err)
+	}
+
+	// Mutate the copy returned by ApplyMove directly.
+	updated.Current[0][1] = 9
+	updated.Current[5][5] = 7
+
+	// A fresh Get should not reflect that mutation (except the move we
+	// actually applied through ApplyMove itself).
+	got, ok := s.Get(g.ID)
+	if !ok {
+		t.Fatalf("Get(%q) ok = false, want true", g.ID)
+	}
+	if got.Current[0][1] != 3 {
+		t.Errorf("After mutating ApplyMove's returned copy, store's copy was affected: Current[0][1] = %d, want 3", got.Current[0][1])
+	}
+	if got.Current[5][5] != 0 {
+		t.Errorf("After mutating ApplyMove's returned copy, store's copy was affected: Current[5][5] = %d, want 0", got.Current[5][5])
+	}
+}
+
+// TestStoreConcurrentAccess drives the Store from many goroutines at once
+// so that `go test -race` can catch data races like the one previously
+// found and fixed in Get/Create/ApplyMove (they used to return live
+// pointers into the store's internal map). Some goroutines share a game
+// ID so concurrent Get and ApplyMove calls actually race on the same
+// game's Current grid, which is exactly the scenario the original bug
+// affected.
+func TestStoreConcurrentAccess(t *testing.T) {
+	s := NewStore()
+
+	// A handful of games shared across goroutines, to force concurrent
+	// Get/ApplyMove calls to collide on the same underlying Game.
+	const sharedGames = 4
+	shared := make([]*Game, sharedGames)
+	for i := range shared {
+		shared[i] = s.Create(testPuzzle())
+	}
+
+	const workers = 20
+	const iterations = 50
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			sharedGame := shared[worker%sharedGames]
+			for j := 0; j < iterations; j++ {
+				// Create a new game each iteration to exercise Create
+				// under concurrency too.
+				g := s.Create(testPuzzle())
+
+				if _, ok := s.Get(g.ID); !ok {
+					t.Errorf("Get(%q) ok = false for a game just created, want true", g.ID)
+				}
+
+				if _, err := s.ApplyMove(g.ID, 0, 1, (j%9)+1); err != nil {
+					t.Errorf("ApplyMove(%q) error = %v, want nil", g.ID, err)
+				}
+
+				// Concurrently read and write the shared game to
+				// specifically exercise the Get+ApplyMove race on one
+				// Game's Current grid.
+				if _, ok := s.Get(sharedGame.ID); !ok {
+					t.Errorf("Get(%q) ok = false for shared game, want true", sharedGame.ID)
+				}
+				if _, err := s.ApplyMove(sharedGame.ID, 1, 1, (j%9)+1); err != nil {
+					t.Errorf("ApplyMove(%q) error = %v, want nil", sharedGame.ID, err)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Sanity check: the store is left in a coherent state and ordinary
+	// operations still work after the concurrent hammering.
+	for _, g := range shared {
+		got, ok := s.Get(g.ID)
+		if !ok {
+			t.Errorf("Get(%q) ok = false after concurrent access, want true", g.ID)
+			continue
+		}
+		if got.Current[1][1] == 0 {
+			t.Errorf("shared game %q Current[1][1] = 0 after concurrent ApplyMove calls, want a value written by some goroutine", g.ID)
+		}
 	}
 }

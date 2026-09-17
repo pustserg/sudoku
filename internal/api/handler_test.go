@@ -352,6 +352,58 @@ func TestCreateGameUsesDBStoreWhenAuthenticated(t *testing.T) {
 	}
 }
 
+func TestCreateGameAuthenticatedAvoidsRepeatPuzzle(t *testing.T) {
+	h, _, sqlDB := testHandlerWithAuth(t)
+	token := loginTestUser(t, sqlDB, "api-repeat-"+t.Name()+"@example.com")
+	ctx := context.Background()
+
+	createEasyGame := func() (gameID string) {
+		req := httptest.NewRequest("POST", "/api/games", bytes.NewBufferString(`{"difficulty":"easy"}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		newMux(h).ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+		}
+		var state gameState
+		if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		t.Cleanup(func() {
+			sqlDB.ExecContext(ctx, "DELETE FROM games WHERE id = $1", state.ID)
+		})
+		return state.ID
+	}
+	puzzleIDFor := func(gameID string) int64 {
+		var id sql.NullInt64
+		if err := sqlDB.QueryRowContext(ctx, "SELECT puzzle_id FROM games WHERE id = $1", gameID).Scan(&id); err != nil {
+			t.Fatalf("query puzzle_id for %q: %v", gameID, err)
+		}
+		if !id.Valid {
+			t.Fatalf("games.puzzle_id is NULL for %q, want a real puzzle id", gameID)
+		}
+		return id.Int64
+	}
+
+	game1ID := createEasyGame()
+	puzzle1 := puzzleIDFor(game1ID)
+
+	// Mark game1 complete directly (bypassing real play, whose target
+	// digits aren't known to this test) so the next create isn't just a
+	// resume of the same in-progress game via the
+	// games_one_active_per_difficulty constraint.
+	if _, err := sqlDB.ExecContext(ctx, "UPDATE games SET status = 'solved' WHERE id = $1", game1ID); err != nil {
+		t.Fatalf("mark game1 solved: %v", err)
+	}
+
+	game2ID := createEasyGame()
+	puzzle2 := puzzleIDFor(game2ID)
+
+	if puzzle2 == puzzle1 {
+		t.Errorf("second Create() reused puzzle %d that this user already played, want a different one", puzzle1)
+	}
+}
+
 func TestCreateGameAnonymousDoesNotTouchDB(t *testing.T) {
 	h, _, sqlDB := testHandlerWithAuth(t)
 

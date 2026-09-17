@@ -41,7 +41,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/logout", h.logout)
 }
 
-// storeFor returns the GameStore to use for r: a user-scoped
+// storeFor returns the GameStore to use for r, and the id of the
+// authenticated user it belongs to (0 for anonymous — safe, since
+// users.id is a BIGSERIAL starting at 1). The store is a user-scoped
 // db.GameStore if r carries a valid session, h.anonStore if r carries
 // no session, or a non-nil error if Authenticate itself failed (e.g. a
 // database error) — that must NOT be treated the same as "no session",
@@ -53,18 +55,18 @@ func (h *Handler) Register(mux *http.ServeMux) {
 // is a bearer-token JSON API and must not also honor the session
 // cookie, or it becomes reachable via CSRF from a browser that's logged
 // into the web UI (see FromRequestBearerOnly's doc comment).
-func (h *Handler) storeFor(r *http.Request) (game.GameStore, error) {
+func (h *Handler) storeFor(r *http.Request) (game.GameStore, int64, error) {
 	if h.auth == nil {
-		return h.anonStore, nil
+		return h.anonStore, 0, nil
 	}
 	user, err := h.auth.Authenticate(r.Context(), auth.FromRequestBearerOnly(r))
 	if err == nil {
-		return db.NewGameStore(h.sqlDB, user.ID), nil
+		return db.NewGameStore(h.sqlDB, user.ID), user.ID, nil
 	}
 	if authFallbackToAnon(err) {
-		return h.anonStore, nil
+		return h.anonStore, 0, nil
 	}
-	return nil, err
+	return nil, 0, err
 }
 
 // authFallbackToAnon reports whether an error from auth.Service.
@@ -115,19 +117,25 @@ func (h *Handler) createGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := h.puzzles(r.Context(), d)
+	store, userID, err := h.storeFor(r)
+	if err != nil {
+		log.Printf("api: authenticate failed: %v", err)
+		writeError(w, http.StatusInternalServerError, "could not authenticate request")
+		return
+	}
+
+	var p sudoku.Puzzle
+	if userID != 0 {
+		p, err = db.RandomPuzzleForUser(r.Context(), h.sqlDB, d, userID)
+	} else {
+		p, err = h.puzzles(r.Context(), d)
+	}
 	if err != nil {
 		log.Printf("api: puzzle lookup failed: %v", err)
 		writeError(w, http.StatusInternalServerError, "could not find a puzzle right now")
 		return
 	}
 
-	store, err := h.storeFor(r)
-	if err != nil {
-		log.Printf("api: authenticate failed: %v", err)
-		writeError(w, http.StatusInternalServerError, "could not authenticate request")
-		return
-	}
 	g, err := store.Create(r.Context(), p)
 	if err != nil {
 		log.Printf("api: create game failed: %v", err)
@@ -139,7 +147,7 @@ func (h *Handler) createGame(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getGame(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	store, err := h.storeFor(r)
+	store, _, err := h.storeFor(r)
 	if err != nil {
 		log.Printf("api: authenticate failed: %v", err)
 		writeError(w, http.StatusInternalServerError, "could not authenticate request")
@@ -173,7 +181,7 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store, err := h.storeFor(r)
+	store, _, err := h.storeFor(r)
 	if err != nil {
 		log.Printf("api: authenticate failed: %v", err)
 		writeError(w, http.StatusInternalServerError, "could not authenticate request")

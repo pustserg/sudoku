@@ -1,0 +1,2 @@
+ALTER TABLE games
+    ADD COLUMN puzzle_id BIGINT REFERENCES puzzles(id) ON DELETE SET NULL;

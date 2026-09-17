@@ -53,9 +53,9 @@ func (s *GameStore) Create(ctx context.Context, p sudoku.Puzzle) (*game.Game, er
 		MaxMistakes: game.MaxMistakesFor(p.Difficulty),
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO games (id, user_id, difficulty, givens, current, solution, mistakes, max_mistakes, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'in_progress')`,
-		g.ID, s.userID, int(g.Difficulty), gridToString(g.Givens), gridToString(g.Current), gridToString(g.Solution), g.Mistakes, g.MaxMistakes)
+		INSERT INTO games (id, user_id, difficulty, givens, current, solution, mistakes, max_mistakes, status, puzzle_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'in_progress', $9)`,
+		g.ID, s.userID, int(g.Difficulty), gridToString(g.Givens), gridToString(g.Current), gridToString(g.Solution), g.Mistakes, g.MaxMistakes, nullablePuzzleID(p.ID))
 	if err != nil {
 		if isOneActivePerDifficultyViolation(err) {
 			// Lost a race against a concurrent Create for the same
@@ -72,6 +72,17 @@ func (s *GameStore) Create(ctx context.Context, p sudoku.Puzzle) (*game.Game, er
 		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 	return g, nil
+}
+
+// nullablePuzzleID converts a sudoku.Puzzle.ID for storage in
+// games.puzzle_id: 0 (a puzzle that came from a lookup that never set an
+// ID, e.g. a test stub) is stored as NULL rather than a bogus 0
+// reference, since puzzles.id is a BIGSERIAL starting at 1.
+func nullablePuzzleID(id int64) any {
+	if id == 0 {
+		return nil
+	}
+	return id
 }
 
 // getInProgressGame returns the user's existing in_progress game for the

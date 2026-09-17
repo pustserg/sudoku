@@ -13,6 +13,7 @@ import (
 	"github.com/pustserg/sudoku/internal/auth"
 	"github.com/pustserg/sudoku/internal/db"
 	"github.com/pustserg/sudoku/internal/game"
+	"github.com/pustserg/sudoku/internal/sudoku"
 )
 
 //go:embed templates/*.html
@@ -66,29 +67,31 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /logout", h.logout)
 }
 
-// storeFor mirrors api.Handler.storeFor: a user-scoped db.GameStore if r
-// carries a valid session, h.anonStore if r carries no session, or a
-// non-nil error if Authenticate itself failed (e.g. a database error) —
-// that must NOT be treated the same as "no session", or a user who
-// thinks they're logged in would silently get an unpersisted anonymous
-// game. Callers must check the error and fail the request (500) rather
-// than proceeding on the returned store.
+// storeFor mirrors api.Handler.storeFor: returns the GameStore to use
+// for r plus the id of the authenticated user it belongs to (0 for
+// anonymous — safe, since users.id is a BIGSERIAL starting at 1). A
+// user-scoped db.GameStore if r carries a valid session, h.anonStore if
+// r carries no session, or a non-nil error if Authenticate itself
+// failed (e.g. a database error) — that must NOT be treated the same as
+// "no session", or a user who thinks they're logged in would silently
+// get an unpersisted anonymous game. Callers must check the error and
+// fail the request (500) rather than proceeding on the returned store.
 //
 // Unlike internal/api, this legitimately uses auth.FromRequest (cookie
 // then bearer), since the web UI's clients are cookie-authenticated
 // browsers.
-func (h *Handler) storeFor(r *http.Request) (game.GameStore, error) {
+func (h *Handler) storeFor(r *http.Request) (game.GameStore, int64, error) {
 	if h.auth == nil {
-		return h.anonStore, nil
+		return h.anonStore, 0, nil
 	}
 	user, err := h.auth.Authenticate(r.Context(), auth.FromRequest(r))
 	if err == nil {
-		return db.NewGameStore(h.sqlDB, user.ID), nil
+		return db.NewGameStore(h.sqlDB, user.ID), user.ID, nil
 	}
 	if authFallbackToAnon(err) {
-		return h.anonStore, nil
+		return h.anonStore, 0, nil
 	}
-	return nil, err
+	return nil, 0, err
 }
 
 // authFallbackToAnon mirrors api.authFallbackToAnon: reports whether an
@@ -132,19 +135,25 @@ func (h *Handler) createGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := h.puzzles(r.Context(), d)
+	store, userID, err := h.storeFor(r)
+	if err != nil {
+		log.Printf("web: authenticate failed: %v", err)
+		http.Error(w, "could not authenticate request", http.StatusInternalServerError)
+		return
+	}
+
+	var p sudoku.Puzzle
+	if userID != 0 {
+		p, err = db.RandomPuzzleForUser(r.Context(), h.sqlDB, d, userID)
+	} else {
+		p, err = h.puzzles(r.Context(), d)
+	}
 	if err != nil {
 		log.Printf("web: puzzle lookup failed: %v", err)
 		http.Error(w, "could not find a puzzle right now", http.StatusInternalServerError)
 		return
 	}
 
-	store, err := h.storeFor(r)
-	if err != nil {
-		log.Printf("web: authenticate failed: %v", err)
-		http.Error(w, "could not authenticate request", http.StatusInternalServerError)
-		return
-	}
 	g, err := store.Create(r.Context(), p)
 	if err != nil {
 		log.Printf("web: create game failed: %v", err)
@@ -205,7 +214,7 @@ func newBoardView(g *game.Game) boardView {
 
 func (h *Handler) showBoard(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	store, err := h.storeFor(r)
+	store, _, err := h.storeFor(r)
 	if err != nil {
 		log.Printf("web: authenticate failed: %v", err)
 		http.Error(w, "could not authenticate request", http.StatusInternalServerError)
@@ -237,7 +246,7 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store, err := h.storeFor(r)
+	store, _, err := h.storeFor(r)
 	if err != nil {
 		log.Printf("web: authenticate failed: %v", err)
 		http.Error(w, "could not authenticate request", http.StatusInternalServerError)

@@ -80,6 +80,46 @@ func TestGameStoreCreateAndGet(t *testing.T) {
 	}
 }
 
+func TestGameStoreCreatePersistsPuzzleID(t *testing.T) {
+	url := testDatabaseURL(t)
+	sqlDB, err := Open(url)
+	if err != nil {
+		t.Fatalf("Open() error: %v", err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+
+	ctx := context.Background()
+
+	var grid sudoku.Grid
+	grid[0][0] = 9
+	fixture := sudoku.Puzzle{Givens: grid, Solution: grid, Difficulty: sudoku.Medium}
+	t.Cleanup(func() {
+		sqlDB.ExecContext(ctx, "DELETE FROM puzzles WHERE givens = $1", gridToString(fixture.Givens))
+	})
+	if _, err := InsertPuzzles(ctx, sqlDB, []sudoku.Puzzle{fixture}); err != nil {
+		t.Fatalf("InsertPuzzles() error: %v", err)
+	}
+	var wantPuzzleID int64
+	if err := sqlDB.QueryRowContext(ctx, "SELECT id FROM puzzles WHERE givens = $1", gridToString(fixture.Givens)).Scan(&wantPuzzleID); err != nil {
+		t.Fatalf("query fixture puzzle id: %v", err)
+	}
+	fixture.ID = wantPuzzleID
+
+	userID := testUser(t, sqlDB)
+	g, err := NewGameStore(sqlDB, userID).Create(ctx, fixture)
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+
+	var gotPuzzleID sql.NullInt64
+	if err := sqlDB.QueryRowContext(ctx, "SELECT puzzle_id FROM games WHERE id = $1", g.ID).Scan(&gotPuzzleID); err != nil {
+		t.Fatalf("query games.puzzle_id: %v", err)
+	}
+	if !gotPuzzleID.Valid || gotPuzzleID.Int64 != wantPuzzleID {
+		t.Errorf("games.puzzle_id = %v, want %d", gotPuzzleID, wantPuzzleID)
+	}
+}
+
 func TestGameStoreGetUnknownID(t *testing.T) {
 	url := testDatabaseURL(t)
 	sqlDB, err := Open(url)

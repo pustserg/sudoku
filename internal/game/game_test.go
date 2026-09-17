@@ -1,11 +1,14 @@
 package game
 
 import (
+	"context"
 	"sync"
 	"testing"
 
 	"github.com/pustserg/sudoku/internal/sudoku"
 )
+
+var ctx = context.Background()
 
 func testPuzzle() sudoku.Puzzle {
 	var givens, solution sudoku.Grid
@@ -15,9 +18,18 @@ func testPuzzle() sudoku.Puzzle {
 	return sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: sudoku.Easy}
 }
 
+func mustCreate(t *testing.T, s *Store, p sudoku.Puzzle) *Game {
+	t.Helper()
+	g, err := s.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	return g
+}
+
 func TestStoreCreateAndGet(t *testing.T) {
 	s := NewStore()
-	g := s.Create(testPuzzle())
+	g := mustCreate(t, s, testPuzzle())
 
 	if g.ID == "" {
 		t.Fatal("Create() returned a game with an empty ID")
@@ -26,9 +38,9 @@ func TestStoreCreateAndGet(t *testing.T) {
 		t.Errorf("Current = %v, want equal to Givens on creation", g.Current)
 	}
 
-	got, ok := s.Get(g.ID)
-	if !ok {
-		t.Fatalf("Get(%q) ok = false, want true", g.ID)
+	got, err := s.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("Get(%q) error = %v, want nil", g.ID, err)
 	}
 	if *got != *g {
 		t.Errorf("Get(%q) returned different game data than Create produced", g.ID)
@@ -37,8 +49,8 @@ func TestStoreCreateAndGet(t *testing.T) {
 
 func TestStoreCreateGeneratesUniqueIDs(t *testing.T) {
 	s := NewStore()
-	g1 := s.Create(testPuzzle())
-	g2 := s.Create(testPuzzle())
+	g1 := mustCreate(t, s, testPuzzle())
+	g2 := mustCreate(t, s, testPuzzle())
 
 	if g1.ID == g2.ID {
 		t.Errorf("two Create() calls produced the same ID %q", g1.ID)
@@ -47,16 +59,16 @@ func TestStoreCreateGeneratesUniqueIDs(t *testing.T) {
 
 func TestStoreGetUnknownID(t *testing.T) {
 	s := NewStore()
-	if _, ok := s.Get("does-not-exist"); ok {
-		t.Error("Get() ok = true for an unknown ID, want false")
+	if _, err := s.Get(ctx, "does-not-exist"); err != ErrNotFound {
+		t.Errorf("Get() error = %v, want ErrNotFound", err)
 	}
 }
 
 func TestStoreApplyMove(t *testing.T) {
 	s := NewStore()
-	g := s.Create(testPuzzle())
+	g := mustCreate(t, s, testPuzzle())
 
-	updated, err := s.ApplyMove(g.ID, 0, 1, 3)
+	updated, err := s.ApplyMove(ctx, g.ID, 0, 1, 3)
 	if err != nil {
 		t.Fatalf("ApplyMove() error = %v, want nil", err)
 	}
@@ -64,7 +76,7 @@ func TestStoreApplyMove(t *testing.T) {
 		t.Errorf("Current[0][1] = %d, want 3", updated.Current[0][1])
 	}
 
-	updated, err = s.ApplyMove(g.ID, 0, 1, 0)
+	updated, err = s.ApplyMove(ctx, g.ID, 0, 1, 0)
 	if err != nil {
 		t.Fatalf("ApplyMove() clearing cell error = %v, want nil", err)
 	}
@@ -75,7 +87,7 @@ func TestStoreApplyMove(t *testing.T) {
 
 func TestStoreApplyMoveOutOfRange(t *testing.T) {
 	s := NewStore()
-	g := s.Create(testPuzzle())
+	g := mustCreate(t, s, testPuzzle())
 
 	tests := []struct {
 		name            string
@@ -90,7 +102,7 @@ func TestStoreApplyMoveOutOfRange(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := s.ApplyMove(g.ID, tt.row, tt.col, tt.value); err != ErrOutOfRange {
+			if _, err := s.ApplyMove(ctx, g.ID, tt.row, tt.col, tt.value); err != ErrOutOfRange {
 				t.Errorf("ApplyMove(%d,%d,%d) error = %v, want ErrOutOfRange", tt.row, tt.col, tt.value, err)
 			}
 		})
@@ -99,29 +111,29 @@ func TestStoreApplyMoveOutOfRange(t *testing.T) {
 
 func TestStoreApplyMoveGivenCell(t *testing.T) {
 	s := NewStore()
-	g := s.Create(testPuzzle()) // (0,0) is a given (value 5)
+	g := mustCreate(t, s, testPuzzle()) // (0,0) is a given (value 5)
 
-	if _, err := s.ApplyMove(g.ID, 0, 0, 7); err != ErrGivenCell {
+	if _, err := s.ApplyMove(ctx, g.ID, 0, 0, 7); err != ErrGivenCell {
 		t.Errorf("ApplyMove() on a given cell error = %v, want ErrGivenCell", err)
 	}
 }
 
 func TestStoreApplyMoveUnknownGame(t *testing.T) {
 	s := NewStore()
-	if _, err := s.ApplyMove("does-not-exist", 0, 1, 5); err != ErrNotFound {
+	if _, err := s.ApplyMove(ctx, "does-not-exist", 0, 1, 5); err != ErrNotFound {
 		t.Errorf("ApplyMove() on unknown game error = %v, want ErrNotFound", err)
 	}
 }
 
 func TestGameSolved(t *testing.T) {
 	s := NewStore()
-	g := s.Create(testPuzzle())
+	g := mustCreate(t, s, testPuzzle())
 
 	if g.Solved() {
 		t.Error("Solved() = true immediately after creation, want false")
 	}
 
-	updated, err := s.ApplyMove(g.ID, 0, 1, 3)
+	updated, err := s.ApplyMove(ctx, g.ID, 0, 1, 3)
 	if err != nil {
 		t.Fatalf("ApplyMove() error = %v", err)
 	}
@@ -132,26 +144,22 @@ func TestGameSolved(t *testing.T) {
 
 func TestGetReturnsIndependentCopy(t *testing.T) {
 	s := NewStore()
-	g := s.Create(testPuzzle())
+	g := mustCreate(t, s, testPuzzle())
 	gameID := g.ID
 
-	// Get a copy from the store
-	copy1, ok := s.Get(gameID)
-	if !ok {
-		t.Fatalf("Get(%q) ok = false, want true", gameID)
+	copy1, err := s.Get(ctx, gameID)
+	if err != nil {
+		t.Fatalf("Get(%q) error = %v, want nil", gameID, err)
 	}
 
-	// Mutate the returned copy directly (this should not affect the store's internal copy)
 	copy1.Current[0][1] = 9
 	copy1.Current[5][5] = 7
 
-	// Get another copy from the store
-	copy2, ok := s.Get(gameID)
-	if !ok {
-		t.Fatalf("Get(%q) ok = false after first mutation, want true", gameID)
+	copy2, err := s.Get(ctx, gameID)
+	if err != nil {
+		t.Fatalf("Get(%q) error = %v after first mutation, want nil", gameID, err)
 	}
 
-	// The store's internal copy should be unaffected by mutations to copy1
 	if copy2.Current[0][1] != 0 {
 		t.Errorf("After mutating returned copy, store's copy was affected: Current[0][1] = %d, want 0", copy2.Current[0][1])
 	}
@@ -162,17 +170,15 @@ func TestGetReturnsIndependentCopy(t *testing.T) {
 
 func TestCreateReturnsIndependentCopy(t *testing.T) {
 	s := NewStore()
-	g := s.Create(testPuzzle())
+	g := mustCreate(t, s, testPuzzle())
 	gameID := g.ID
 
-	// Mutate the copy returned by Create directly.
 	g.Current[0][1] = 9
 	g.Current[5][5] = 7
 
-	// A fresh Get should not reflect that mutation.
-	got, ok := s.Get(gameID)
-	if !ok {
-		t.Fatalf("Get(%q) ok = false, want true", gameID)
+	got, err := s.Get(ctx, gameID)
+	if err != nil {
+		t.Fatalf("Get(%q) error = %v, want nil", gameID, err)
 	}
 	if got.Current[0][1] != 0 {
 		t.Errorf("After mutating Create's returned copy, store's copy was affected: Current[0][1] = %d, want 0", got.Current[0][1])
@@ -184,22 +190,19 @@ func TestCreateReturnsIndependentCopy(t *testing.T) {
 
 func TestApplyMoveReturnsIndependentCopy(t *testing.T) {
 	s := NewStore()
-	g := s.Create(testPuzzle())
+	g := mustCreate(t, s, testPuzzle())
 
-	updated, err := s.ApplyMove(g.ID, 0, 1, 3)
+	updated, err := s.ApplyMove(ctx, g.ID, 0, 1, 3)
 	if err != nil {
 		t.Fatalf("ApplyMove() error = %v, want nil", err)
 	}
 
-	// Mutate the copy returned by ApplyMove directly.
 	updated.Current[0][1] = 9
 	updated.Current[5][5] = 7
 
-	// A fresh Get should not reflect that mutation (except the move we
-	// actually applied through ApplyMove itself).
-	got, ok := s.Get(g.ID)
-	if !ok {
-		t.Fatalf("Get(%q) ok = false, want true", g.ID)
+	got, err := s.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("Get(%q) error = %v, want nil", g.ID, err)
 	}
 	if got.Current[0][1] != 3 {
 		t.Errorf("After mutating ApplyMove's returned copy, store's copy was affected: Current[0][1] = %d, want 3", got.Current[0][1])
@@ -209,22 +212,13 @@ func TestApplyMoveReturnsIndependentCopy(t *testing.T) {
 	}
 }
 
-// TestStoreConcurrentAccess drives the Store from many goroutines at once
-// so that `go test -race` can catch data races like the one previously
-// found and fixed in Get/Create/ApplyMove (they used to return live
-// pointers into the store's internal map). Some goroutines share a game
-// ID so concurrent Get and ApplyMove calls actually race on the same
-// game's Current grid, which is exactly the scenario the original bug
-// affected.
 func TestStoreConcurrentAccess(t *testing.T) {
 	s := NewStore()
 
-	// A handful of games shared across goroutines, to force concurrent
-	// Get/ApplyMove calls to collide on the same underlying Game.
 	const sharedGames = 4
 	shared := make([]*Game, sharedGames)
 	for i := range shared {
-		shared[i] = s.Create(testPuzzle())
+		shared[i] = mustCreate(t, s, testPuzzle())
 	}
 
 	const workers = 20
@@ -237,29 +231,24 @@ func TestStoreConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			sharedGame := shared[worker%sharedGames]
 			for j := 0; j < iterations; j++ {
-				// Create a new game each iteration to exercise Create
-				// under concurrency too.
-				g := s.Create(testPuzzle())
-
-				if _, ok := s.Get(g.ID); !ok {
-					t.Errorf("Get(%q) ok = false for a game just created, want true", g.ID)
+				g, err := s.Create(ctx, testPuzzle())
+				if err != nil {
+					t.Errorf("Create() error = %v, want nil", err)
+					continue
 				}
 
-				// testPuzzle()'s solution has 0 at (0,1) unless the value
-				// happens to be 3, so most of these count as mistakes;
-				// tolerate ErrGameOver once a game's mistake cap is hit,
-				// which is now correct behavior, not a race.
-				if _, err := s.ApplyMove(g.ID, 0, 1, (j%9)+1); err != nil && err != ErrGameOver {
+				if _, err := s.Get(ctx, g.ID); err != nil {
+					t.Errorf("Get(%q) error = %v for a game just created, want nil", g.ID, err)
+				}
+
+				if _, err := s.ApplyMove(ctx, g.ID, 0, 1, (j%9)+1); err != nil && err != ErrGameOver {
 					t.Errorf("ApplyMove(%q) error = %v, want nil or ErrGameOver", g.ID, err)
 				}
 
-				// Concurrently read and write the shared game to
-				// specifically exercise the Get+ApplyMove race on one
-				// Game's Current grid.
-				if _, ok := s.Get(sharedGame.ID); !ok {
-					t.Errorf("Get(%q) ok = false for shared game, want true", sharedGame.ID)
+				if _, err := s.Get(ctx, sharedGame.ID); err != nil {
+					t.Errorf("Get(%q) error = %v for shared game, want nil", sharedGame.ID, err)
 				}
-				if _, err := s.ApplyMove(sharedGame.ID, 1, 1, (j%9)+1); err != nil && err != ErrGameOver {
+				if _, err := s.ApplyMove(ctx, sharedGame.ID, 1, 1, (j%9)+1); err != nil && err != ErrGameOver {
 					t.Errorf("ApplyMove(%q) error = %v, want nil or ErrGameOver", sharedGame.ID, err)
 				}
 			}
@@ -267,12 +256,10 @@ func TestStoreConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Sanity check: the store is left in a coherent state and ordinary
-	// operations still work after the concurrent hammering.
 	for _, g := range shared {
-		got, ok := s.Get(g.ID)
-		if !ok {
-			t.Errorf("Get(%q) ok = false after concurrent access, want true", g.ID)
+		got, err := s.Get(ctx, g.ID)
+		if err != nil {
+			t.Errorf("Get(%q) error = %v after concurrent access, want nil", g.ID, err)
 			continue
 		}
 		if got.Current[1][1] == 0 {
@@ -295,7 +282,7 @@ func TestCreateSetsMaxMistakesByDifficulty(t *testing.T) {
 		p := testPuzzle()
 		p.Difficulty = tt.d
 		s := NewStore()
-		g := s.Create(p)
+		g := mustCreate(t, s, p)
 		if g.MaxMistakes != tt.want {
 			t.Errorf("Create() with difficulty %v: MaxMistakes = %d, want %d", tt.d, g.MaxMistakes, tt.want)
 		}
@@ -304,9 +291,9 @@ func TestCreateSetsMaxMistakesByDifficulty(t *testing.T) {
 
 func TestApplyMoveWrongValueCountsMistake(t *testing.T) {
 	s := NewStore()
-	g := s.Create(testPuzzle()) // solution[0][1] == 3
+	g := mustCreate(t, s, testPuzzle()) // solution[0][1] == 3
 
-	updated, err := s.ApplyMove(g.ID, 0, 1, 9) // wrong: solution wants 3
+	updated, err := s.ApplyMove(ctx, g.ID, 0, 1, 9) // wrong: solution wants 3
 	if err != nil {
 		t.Fatalf("ApplyMove() error = %v, want nil", err)
 	}
@@ -320,9 +307,9 @@ func TestApplyMoveWrongValueCountsMistake(t *testing.T) {
 
 func TestApplyMoveCorrectValueDoesNotCountMistake(t *testing.T) {
 	s := NewStore()
-	g := s.Create(testPuzzle()) // solution[0][1] == 3
+	g := mustCreate(t, s, testPuzzle()) // solution[0][1] == 3
 
-	updated, err := s.ApplyMove(g.ID, 0, 1, 3) // correct
+	updated, err := s.ApplyMove(ctx, g.ID, 0, 1, 3) // correct
 	if err != nil {
 		t.Fatalf("ApplyMove() error = %v, want nil", err)
 	}
@@ -333,12 +320,12 @@ func TestApplyMoveCorrectValueDoesNotCountMistake(t *testing.T) {
 
 func TestApplyMoveClearingCellDoesNotCountMistake(t *testing.T) {
 	s := NewStore()
-	g := s.Create(testPuzzle())
+	g := mustCreate(t, s, testPuzzle())
 
-	if _, err := s.ApplyMove(g.ID, 0, 1, 9); err != nil {
+	if _, err := s.ApplyMove(ctx, g.ID, 0, 1, 9); err != nil {
 		t.Fatalf("ApplyMove() error = %v", err)
 	}
-	updated, err := s.ApplyMove(g.ID, 0, 1, 0) // erase
+	updated, err := s.ApplyMove(ctx, g.ID, 0, 1, 0) // erase
 	if err != nil {
 		t.Fatalf("ApplyMove() error = %v", err)
 	}
@@ -351,23 +338,26 @@ func TestApplyMoveRejectedAfterGameOver(t *testing.T) {
 	s := NewStore()
 	p := testPuzzle()
 	p.Difficulty = sudoku.Hard // MaxMistakes == 3
-	g := s.Create(p)
+	g := mustCreate(t, s, p)
 
 	for i := 0; i < 3; i++ {
-		if _, err := s.ApplyMove(g.ID, 0, 1, 9); err != nil { // always wrong
+		if _, err := s.ApplyMove(ctx, g.ID, 0, 1, 9); err != nil { // always wrong
 			t.Fatalf("ApplyMove() error = %v on mistake %d", err, i+1)
 		}
 	}
 
-	got, ok := s.Get(g.ID)
-	if !ok {
-		t.Fatalf("Get() ok = false")
+	got, err := s.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v, want nil", err)
 	}
 	if !got.Failed() {
 		t.Fatalf("Failed() = false after 3 mistakes with MaxMistakes=3, want true")
 	}
 
-	if _, err := s.ApplyMove(g.ID, 0, 1, 3); err != ErrGameOver {
+	if _, err := s.ApplyMove(ctx, g.ID, 0, 1, 3); err != ErrGameOver {
 		t.Errorf("ApplyMove() after game over: error = %v, want ErrGameOver", err)
 	}
 }
+
+// compile-time check that *Store implements GameStore.
+var _ GameStore = (*Store)(nil)

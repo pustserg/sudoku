@@ -13,13 +13,13 @@ import (
 
 // Handler serves the JSON REST API for creating and playing games.
 type Handler struct {
-	store   *game.Store
+	store   game.GameStore
 	puzzles game.PuzzleLookup
 }
 
 // NewHandler returns a Handler backed by store, pulling new puzzles via
 // puzzles.
-func NewHandler(store *game.Store, puzzles game.PuzzleLookup) *Handler {
+func NewHandler(store game.GameStore, puzzles game.PuzzleLookup) *Handler {
 	return &Handler{store: store, puzzles: puzzles}
 }
 
@@ -77,15 +77,25 @@ func (h *Handler) createGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	g := h.store.Create(p)
+	g, err := h.store.Create(r.Context(), p)
+	if err != nil {
+		log.Printf("api: create game failed: %v", err)
+		writeError(w, http.StatusInternalServerError, "could not create game")
+		return
+	}
 	writeJSON(w, http.StatusCreated, toGameState(g))
 }
 
 func (h *Handler) getGame(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	g, ok := h.store.Get(id)
-	if !ok {
+	g, err := h.store.Get(r.Context(), id)
+	if errors.Is(err, game.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "game not found")
+		return
+	}
+	if err != nil {
+		log.Printf("api: get game failed: %v", err)
+		writeError(w, http.StatusInternalServerError, "could not load game")
 		return
 	}
 	writeJSON(w, http.StatusOK, toGameState(g))
@@ -106,7 +116,7 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	g, err := h.store.ApplyMove(id, req.Row, req.Col, req.Value)
+	g, err := h.store.ApplyMove(r.Context(), id, req.Row, req.Col, req.Value)
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusOK, toGameState(g))

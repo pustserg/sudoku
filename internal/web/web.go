@@ -19,13 +19,13 @@ var templates = template.Must(template.ParseFS(templateFS, "templates/*.html"))
 
 // Handler serves the htmx web UI.
 type Handler struct {
-	store   *game.Store
+	store   game.GameStore
 	puzzles game.PuzzleLookup
 }
 
 // NewHandler returns a Handler backed by store, pulling new puzzles via
 // puzzles.
-func NewHandler(store *game.Store, puzzles game.PuzzleLookup) *Handler {
+func NewHandler(store game.GameStore, puzzles game.PuzzleLookup) *Handler {
 	return &Handler{store: store, puzzles: puzzles}
 }
 
@@ -57,7 +57,12 @@ func (h *Handler) createGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	g := h.store.Create(p)
+	g, err := h.store.Create(r.Context(), p)
+	if err != nil {
+		log.Printf("web: create game failed: %v", err)
+		http.Error(w, "could not create game", http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, "/play/"+g.ID, http.StatusFound)
 }
 
@@ -112,9 +117,14 @@ func newBoardView(g *game.Game) boardView {
 
 func (h *Handler) showBoard(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	g, ok := h.store.Get(id)
-	if !ok {
+	g, err := h.store.Get(r.Context(), id)
+	if errors.Is(err, game.ErrNotFound) {
 		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("web: get game failed: %v", err)
+		http.Error(w, "could not load game", http.StatusInternalServerError)
 		return
 	}
 	if err := templates.ExecuteTemplate(w, "boardPage", newBoardView(g)); err != nil {
@@ -133,7 +143,7 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	g, err := h.store.ApplyMove(id, row, col, value)
+	g, err := h.store.ApplyMove(r.Context(), id, row, col, value)
 	switch {
 	case err == nil:
 		if err := templates.ExecuteTemplate(w, "board", newBoardView(g)); err != nil {

@@ -24,6 +24,15 @@ func testHandler() (*Handler, *game.Store) {
 	return NewHandler(store, lookup), store
 }
 
+func mustCreate(t *testing.T, store *game.Store, p sudoku.Puzzle) *game.Game {
+	t.Helper()
+	g, err := store.Create(context.Background(), p)
+	if err != nil {
+		t.Fatalf("store.Create() error = %v, want nil", err)
+	}
+	return g
+}
+
 func newMux(h *Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	h.Register(mux)
@@ -76,7 +85,7 @@ func TestCreateGame(t *testing.T) {
 func TestGetGame(t *testing.T) {
 	h, store := testHandler()
 	var givens sudoku.Grid
-	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
 	mux := newMux(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/games/"+g.ID, nil)
@@ -112,7 +121,7 @@ func TestSubmitMove(t *testing.T) {
 	h, store := testHandler()
 	var givens sudoku.Grid
 	givens[0][0] = 5
-	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
 	mux := newMux(h)
 
 	body := `{"row":0,"col":1,"value":7}`
@@ -136,7 +145,7 @@ func TestSubmitMoveOnGivenCell(t *testing.T) {
 	h, store := testHandler()
 	var givens sudoku.Grid
 	givens[0][0] = 5
-	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
 	mux := newMux(h)
 
 	body := `{"row":0,"col":0,"value":9}`
@@ -152,7 +161,7 @@ func TestSubmitMoveOnGivenCell(t *testing.T) {
 func TestSubmitMoveOutOfRange(t *testing.T) {
 	h, store := testHandler()
 	var givens sudoku.Grid
-	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
 	mux := newMux(h)
 
 	body := `{"row":9,"col":0,"value":1}`
@@ -183,7 +192,7 @@ func TestSubmitMoveWrongValueIncrementsMistakes(t *testing.T) {
 	h, store := testHandler()
 	var givens sudoku.Grid
 	givens[0][0] = 5
-	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy}) // solution[0][1] == 0
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy}) // solution[0][1] == 0
 
 	body := `{"row":0,"col":1,"value":9}` // wrong: solution wants 0 here
 	req := httptest.NewRequest(http.MethodPost, "/api/games/"+g.ID+"/moves", bytes.NewBufferString(body))
@@ -212,7 +221,7 @@ func TestSubmitMoveWrongValueIncrementsMistakes(t *testing.T) {
 func TestSubmitMoveAfterGameOver(t *testing.T) {
 	h, store := testHandler()
 	var givens sudoku.Grid
-	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Hard}) // MaxMistakes == 3, solution[0][1] == 0
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Hard}) // MaxMistakes == 3, solution[0][1] == 0
 	mux := newMux(h)
 
 	for i := 0; i < 3; i++ {

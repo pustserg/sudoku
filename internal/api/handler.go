@@ -2,25 +2,34 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 
+	"github.com/pustserg/sudoku/internal/auth"
+	"github.com/pustserg/sudoku/internal/db"
 	"github.com/pustserg/sudoku/internal/game"
 	"github.com/pustserg/sudoku/internal/sudoku"
 )
 
-// Handler serves the JSON REST API for creating and playing games.
+// Handler serves the JSON REST API for creating and playing games, plus
+// Google OAuth login/logout for API (e.g. future mobile) clients.
 type Handler struct {
-	store   game.GameStore
-	puzzles game.PuzzleLookup
+	anonStore game.GameStore
+	puzzles   game.PuzzleLookup
+	auth      *auth.Service
+	sqlDB     *sql.DB
 }
 
-// NewHandler returns a Handler backed by store, pulling new puzzles via
-// puzzles.
-func NewHandler(store game.GameStore, puzzles game.PuzzleLookup) *Handler {
-	return &Handler{store: store, puzzles: puzzles}
+// NewHandler returns a Handler. anonStore backs anonymous play; puzzles
+// pulls new puzzles; auth and sqlDB back Google login and per-user game
+// persistence. auth and sqlDB may be nil in tests that don't exercise
+// the authenticated path — storeFor then always falls back to
+// anonStore, and the auth endpoints are not expected to be called.
+func NewHandler(anonStore game.GameStore, puzzles game.PuzzleLookup, authSvc *auth.Service, sqlDB *sql.DB) *Handler {
+	return &Handler{anonStore: anonStore, puzzles: puzzles, auth: authSvc, sqlDB: sqlDB}
 }
 
 // Register adds this Handler's routes to mux.
@@ -28,6 +37,21 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/games", h.createGame)
 	mux.HandleFunc("GET /api/games/{id}", h.getGame)
 	mux.HandleFunc("POST /api/games/{id}/moves", h.submitMove)
+	mux.HandleFunc("POST /api/auth/google/callback", h.googleCallback)
+	mux.HandleFunc("POST /api/auth/logout", h.logout)
+}
+
+// storeFor returns the GameStore to use for r: a user-scoped
+// db.GameStore if r carries a valid session, otherwise h.anonStore.
+func (h *Handler) storeFor(r *http.Request) game.GameStore {
+	if h.auth == nil {
+		return h.anonStore
+	}
+	user, err := h.auth.Authenticate(r.Context(), auth.FromRequest(r))
+	if err != nil {
+		return h.anonStore
+	}
+	return db.NewGameStore(h.sqlDB, user.ID)
 }
 
 type gameState struct {
@@ -77,7 +101,7 @@ func (h *Handler) createGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	g, err := h.store.Create(r.Context(), p)
+	g, err := h.storeFor(r).Create(r.Context(), p)
 	if err != nil {
 		log.Printf("api: create game failed: %v", err)
 		writeError(w, http.StatusInternalServerError, "could not create game")
@@ -88,7 +112,7 @@ func (h *Handler) createGame(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getGame(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	g, err := h.store.Get(r.Context(), id)
+	g, err := h.storeFor(r).Get(r.Context(), id)
 	if errors.Is(err, game.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "game not found")
 		return
@@ -116,7 +140,7 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	g, err := h.store.ApplyMove(r.Context(), id, req.Row, req.Col, req.Value)
+	g, err := h.storeFor(r).ApplyMove(r.Context(), id, req.Row, req.Col, req.Value)
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusOK, toGameState(g))
@@ -130,6 +154,38 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 		log.Printf("api: unexpected ApplyMove error: %v", err)
 		writeError(w, http.StatusInternalServerError, "could not apply move")
 	}
+}
+
+type googleCallbackRequest struct {
+	Code string `json:"code"`
+}
+
+type googleCallbackResponse struct {
+	Token string `json:"token"`
+}
+
+func (h *Handler) googleCallback(w http.ResponseWriter, r *http.Request) {
+	var req googleCallbackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Code == "" {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	token, err := h.auth.HandleCallback(r.Context(), req.Code)
+	if err != nil {
+		log.Printf("api: google callback failed: %v", err)
+		writeError(w, http.StatusUnauthorized, "login failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, googleCallbackResponse{Token: token})
+}
+
+func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	if err := h.auth.Logout(r.Context(), auth.FromRequest(r)); err != nil {
+		log.Printf("api: logout failed: %v", err)
+		writeError(w, http.StatusInternalServerError, "logout failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

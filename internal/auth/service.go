@@ -178,6 +178,13 @@ func tokenHash(token string) []byte {
 	return sum[:]
 }
 
+// TokenHashForTest exposes tokenHash to other packages' tests only. Not
+// for production use — production code never needs a raw token's hash
+// outside this package.
+func TokenHashForTest(token string) []byte {
+	return tokenHash(token)
+}
+
 // FromRequest returns the session token carried by r: the CookieName
 // cookie (web UI) if present, otherwise the "Authorization: Bearer
 // <token>" header (API clients), otherwise "".

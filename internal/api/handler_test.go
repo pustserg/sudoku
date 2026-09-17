@@ -3,14 +3,29 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
+	"github.com/pustserg/sudoku/internal/auth"
+	"github.com/pustserg/sudoku/internal/db"
 	"github.com/pustserg/sudoku/internal/game"
 	"github.com/pustserg/sudoku/internal/sudoku"
 )
+
+// testDatabaseURL mirrors internal/db's helper: tests that need a real,
+// already-migrated Postgres database skip without one.
+func testDatabaseURL(t *testing.T) string {
+	t.Helper()
+	url := os.Getenv("SUDOKU_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("SUDOKU_TEST_DATABASE_URL not set, skipping integration test")
+	}
+	return url
+}
 
 func testHandler() (*Handler, *game.Store) {
 	store := game.NewStore()
@@ -21,7 +36,58 @@ func testHandler() (*Handler, *game.Store) {
 		solution[0][1] = 3
 		return sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: d}, nil
 	}
-	return NewHandler(store, lookup), store
+	return NewHandler(store, lookup, nil, nil), store
+}
+
+// testHandlerWithAuth is like testHandler but also wires a real
+// auth.Service (backed by sqlDB) so authenticated-request tests can
+// exercise the logged-in path end to end.
+func testHandlerWithAuth(t *testing.T) (h *Handler, authSvc *auth.Service, sqlDB *sql.DB) {
+	t.Helper()
+	sqlDB, err := db.Open(testDatabaseURL(t))
+	if err != nil {
+		t.Fatalf("db.Open() error: %v", err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+
+	authSvc = auth.NewService(sqlDB, "unused", "unused", "unused")
+	store := game.NewStore()
+	lookup := func(ctx context.Context, d sudoku.Difficulty) (sudoku.Puzzle, error) {
+		var givens, solution sudoku.Grid
+		givens[0][0] = 5
+		solution[0][0] = 5
+		solution[0][1] = 3
+		return sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: d}, nil
+	}
+	h = NewHandler(store, lookup, authSvc, sqlDB)
+	return h, authSvc, sqlDB
+}
+
+// loginTestUser inserts a user + session directly (bypassing the real
+// Google flow, which these tests don't exercise) and returns a bearer
+// token for it.
+func loginTestUser(t *testing.T, sqlDB *sql.DB, email string) string {
+	t.Helper()
+	ctx := context.Background()
+	var userID int64
+	if err := sqlDB.QueryRowContext(ctx, `
+		INSERT INTO users (provider, provider_user_id, email) VALUES ('google', $1, $2) RETURNING id`,
+		email, email).Scan(&userID); err != nil {
+		t.Fatalf("insert test user: %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB.ExecContext(ctx, "DELETE FROM users WHERE id = $1", userID)
+	})
+	token, err := auth.RandomToken(32)
+	if err != nil {
+		t.Fatalf("RandomToken: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, now() + interval '1 hour')`,
+		auth.TokenHashForTest(token), userID); err != nil {
+		t.Fatalf("insert test session: %v", err)
+	}
+	return token
 }
 
 func mustCreate(t *testing.T, store *game.Store, p sudoku.Puzzle) *game.Game {
@@ -241,5 +307,73 @@ func TestSubmitMoveAfterGameOver(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Errorf("status after game over = %d, want %d (body: %s)", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}
+
+func TestCreateGameUsesDBStoreWhenAuthenticated(t *testing.T) {
+	h, _, sqlDB := testHandlerWithAuth(t)
+	token := loginTestUser(t, sqlDB, "api-create-"+t.Name()+"@example.com")
+
+	req := httptest.NewRequest("POST", "/api/games", bytes.NewBufferString(`{"difficulty":"easy"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	newMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var count int
+	if err := sqlDB.QueryRowContext(context.Background(), "SELECT count(*) FROM games").Scan(&count); err != nil {
+		t.Fatalf("query games count: %v", err)
+	}
+	if count == 0 {
+		t.Error("no row was written to the games table for an authenticated create")
+	}
+	t.Cleanup(func() {
+		sqlDB.ExecContext(context.Background(), "DELETE FROM games")
+	})
+}
+
+func TestCreateGameAnonymousDoesNotTouchDB(t *testing.T) {
+	h, _, sqlDB := testHandlerWithAuth(t)
+
+	req := httptest.NewRequest("POST", "/api/games", bytes.NewBufferString(`{"difficulty":"easy"}`))
+	rec := httptest.NewRecorder()
+	newMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var count int
+	if err := sqlDB.QueryRowContext(context.Background(), "SELECT count(*) FROM games").Scan(&count); err != nil {
+		t.Fatalf("query games count: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("anonymous create wrote %d rows to games, want 0", count)
+		sqlDB.ExecContext(context.Background(), "DELETE FROM games")
+	}
+}
+
+func TestLogoutClearsSession(t *testing.T) {
+	h, _, sqlDB := testHandlerWithAuth(t)
+	token := loginTestUser(t, sqlDB, "api-logout-"+t.Name()+"@example.com")
+
+	req := httptest.NewRequest("POST", "/api/auth/logout", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	newMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+
+	var count int
+	if err := sqlDB.QueryRowContext(context.Background(), "SELECT count(*) FROM sessions WHERE token_hash = $1", auth.TokenHashForTest(token)).Scan(&count); err != nil {
+		t.Fatalf("query sessions: %v", err)
+	}
+	if count != 0 {
+		t.Error("session row still exists after logout")
 	}
 }

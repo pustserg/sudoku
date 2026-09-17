@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pustserg/sudoku/internal/game"
 	"github.com/pustserg/sudoku/internal/sudoku"
 )
@@ -56,12 +57,48 @@ func (s *GameStore) Create(ctx context.Context, p sudoku.Puzzle) (*game.Game, er
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'in_progress')`,
 		g.ID, s.userID, int(g.Difficulty), gridToString(g.Givens), gridToString(g.Current), gridToString(g.Solution), g.Mistakes, g.MaxMistakes)
 	if err != nil {
+		if isOneActivePerDifficultyViolation(err) {
+			// Lost a race against a concurrent Create for the same
+			// (user_id, difficulty): the failed insert's transaction
+			// must be rolled back before it's safe to query again.
+			if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+				return nil, fmt.Errorf("rollback after insert conflict: %w", rbErr)
+			}
+			return s.getInProgressGame(ctx, p.Difficulty)
+		}
 		return nil, fmt.Errorf("insert game: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 	return g, nil
+}
+
+// getInProgressGame returns the user's existing in_progress game for the
+// given difficulty. Used by Create to recover the winning row after
+// losing a race against a concurrent Create for the same
+// (user_id, difficulty), once the failed insert's transaction has been
+// rolled back.
+func (s *GameStore) getInProgressGame(ctx context.Context, difficulty sudoku.Difficulty) (*game.Game, error) {
+	g, err := scanGame(s.db.QueryRowContext(ctx, `
+		SELECT id, givens, current, solution, difficulty, mistakes, max_mistakes
+		FROM games WHERE user_id = $1 AND difficulty = $2 AND status = 'in_progress'`,
+		s.userID, int(difficulty)))
+	if err != nil {
+		return nil, fmt.Errorf("query existing game after insert conflict: %w", err)
+	}
+	return g, nil
+}
+
+// isOneActivePerDifficultyViolation reports whether err is a Postgres
+// unique-violation on the games_one_active_per_difficulty index, meaning
+// a concurrent Create for the same (user_id, difficulty) won the race.
+func isOneActivePerDifficultyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return pgErr.Code == "23505" && pgErr.ConstraintName == "games_one_active_per_difficulty"
 }
 
 // Get returns the user's game with the given id, or game.ErrNotFound if

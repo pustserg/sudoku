@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"sync"
 	"testing"
 
 	"github.com/pustserg/sudoku/internal/game"
@@ -169,6 +170,59 @@ func TestGameStoreCreateStartsNewGameAfterCompletion(t *testing.T) {
 	}
 	if second.ID == first.ID {
 		t.Error("Create() after completing the previous game returned the same game, want a new one")
+	}
+}
+
+// TestGameStoreCreateHandlesConcurrentInsert exercises the race between
+// two concurrent Create calls for the same (user_id, difficulty): the
+// games_one_active_per_difficulty unique index lets only one INSERT
+// win, and the loser must resolve by returning the winner's row rather
+// than propagating a raw unique-violation error. This is inherently
+// timing-dependent — it is not guaranteed to hit the exact race window
+// on every run — but it stands as a regression guard and, run with
+// -race and -count, gives the race a real chance to occur.
+func TestGameStoreCreateHandlesConcurrentInsert(t *testing.T) {
+	url := testDatabaseURL(t)
+	sqlDB, err := Open(url)
+	if err != nil {
+		t.Fatalf("Open() error: %v", err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+
+	ctx := context.Background()
+	userID := testUser(t, sqlDB)
+	store := NewGameStore(sqlDB, userID)
+
+	const n = 2
+	type result struct {
+		g   *game.Game
+		err error
+	}
+	results := make(chan result, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			g, err := store.Create(ctx, testGamePuzzle())
+			results <- result{g, err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var ids []string
+	for r := range results {
+		if r.err != nil {
+			t.Fatalf("Create() error = %v, want nil", r.err)
+		}
+		ids = append(ids, r.g.ID)
+	}
+	if len(ids) != n {
+		t.Fatalf("got %d results, want %d", len(ids), n)
+	}
+	if ids[0] != ids[1] {
+		t.Errorf("concurrent Create() calls for the same difficulty returned different games %q and %q, want the same game", ids[0], ids[1])
 	}
 }
 

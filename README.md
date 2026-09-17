@@ -33,7 +33,9 @@ solving the same puzzle together), leaderboards.
 ```
 cmd/server/         server entrypoint
 cmd/genpuzzles/      one-off CLI: generates and rates the puzzle pool
+cmd/migrate/         applies migrations/ via golang-migrate
 internal/sudoku/     puzzle generation, solving, validation (pure logic)
+internal/game/         shared in-memory game-session store (used by both api and web)
 internal/api/         REST handlers
 internal/ws/           WebSocket hub/connection handling
 internal/auth/         OAuth + session logic
@@ -57,19 +59,68 @@ offline rather than guessed at request time.
 
 ## Getting started
 
-> Project is in early setup — these steps will fill in as the code lands.
+**1. Start PostgreSQL** (via the included `docker-compose.yml`):
 
 ```bash
+docker compose up -d postgres
+docker compose ps postgres   # wait until it reports "healthy"
+```
+
+**2. Point at the database and apply migrations:**
+
+```bash
+export DATABASE_URL='postgres://sudoku:sudoku@localhost:5432/sudoku?sslmode=disable'
+go run ./cmd/migrate up
+```
+
+**3. Generate a puzzle pool.** The defaults (50,000 puzzles per difficulty)
+are meant for a real deployment; for local testing, a much smaller pool is
+enough:
+
+```bash
+go run ./cmd/genpuzzles --easy=20 --medium=20 --hard=20 --expert=20 --workers=4
+```
+
+Run `go run ./cmd/genpuzzles --help` to see all flags (counts per
+difficulty, `--workers`, `--batch-size`, `--database-url`). Re-running it is
+safe — it only adds new puzzles (`givens` is unique per puzzle, so
+re-inserting the exact same puzzle is a no-op).
+
+**4. Start the server:**
+
+```bash
+export PORT=8080
 go run ./cmd/server
 ```
 
-Requires a running PostgreSQL instance (connection string via env var, see
-`AGENTS.md` for conventions once configuration lands).
+Then open **http://localhost:8080/** to play, or use the JSON API directly:
+
+```bash
+curl -X POST localhost:8080/api/games -H 'Content-Type: application/json' -d '{"difficulty":"easy"}'
+curl localhost:8080/api/games/<id>
+curl -X POST localhost:8080/api/games/<id>/moves -H 'Content-Type: application/json' -d '{"row":0,"col":1,"value":4}'
+```
+
+Game state itself is in-memory for now (per the current roadmap phase), so
+restarting `cmd/server` loses all in-progress games — only the puzzle pool
+persists in Postgres.
+
+**Cleanup:** `docker compose down` (add `-v` to also wipe the Postgres data
+volume, which removes the puzzle pool too).
 
 ## Testing
 
 - Table-driven unit tests for `internal/sudoku` (generation validity, solver
-  correctness).
+  correctness) and `internal/game` (move validation, mistakes, concurrency).
 - Handler tests for `internal/api` using `net/http/httptest`.
 - htmx page flows are verified manually in-browser; no browser test suite
   planned for v1.
+
+```bash
+go test ./...              # unit tests (Postgres-backed tests skip if
+                            # SUDOKU_TEST_DATABASE_URL isn't set)
+go test ./... -race        # same, with the race detector
+SUDOKU_TEST_DATABASE_URL=$DATABASE_URL go test ./internal/db/... -v
+gofmt -l .                 # formatting check
+go vet ./...                 # static checks
+```

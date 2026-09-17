@@ -2,16 +2,19 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/pustserg/sudoku/internal/auth"
 	"github.com/pustserg/sudoku/internal/db"
 	"github.com/pustserg/sudoku/internal/game"
+	"github.com/pustserg/sudoku/internal/sudoku"
 )
 
 // testDatabaseURL mirrors internal/api's and internal/db's helper:
@@ -196,5 +199,88 @@ func TestLogoutClearsSessionCookieWithConfiguredSecureness(t *testing.T) {
 	}
 	if found.SameSite != http.SameSiteLaxMode {
 		t.Errorf("cleared session cookie SameSite = %v, want SameSiteLaxMode", found.SameSite)
+	}
+}
+
+// loginTestUserForStats mirrors internal/api's loginTestUser: inserts a
+// user + session directly (bypassing the real Google flow) and returns
+// a bearer token for it. auth.FromRequest checks the cookie first, then
+// falls back to the Authorization header, so a bearer-only request
+// (no cookie) is a valid way to authenticate in these tests.
+func loginTestUserForStats(t *testing.T, sqlDB *sql.DB, email string) (userID int64, token string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := sqlDB.QueryRowContext(ctx, `
+		INSERT INTO users (provider, provider_user_id, email) VALUES ('google', $1, $2) RETURNING id`,
+		email, email).Scan(&userID); err != nil {
+		t.Fatalf("insert test user: %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB.ExecContext(ctx, "DELETE FROM users WHERE id = $1", userID)
+	})
+	token, err := auth.RandomToken(32)
+	if err != nil {
+		t.Fatalf("RandomToken: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, now() + interval '1 hour')`,
+		auth.TokenHashForTest(token), userID); err != nil {
+		t.Fatalf("insert test session: %v", err)
+	}
+	return userID, token
+}
+
+func TestStatsRedirectsAnonymous(t *testing.T) {
+	h := NewHandler(game.NewStore(), nil, nil, nil, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	rec := httptest.NewRecorder()
+	h.stats(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if loc := rec.Result().Header.Get("Location"); loc != "/" {
+		t.Errorf("Location = %q, want %q", loc, "/")
+	}
+}
+
+func TestStatsRendersForAuthenticatedUser(t *testing.T) {
+	sqlDB, err := db.Open(testDatabaseURL(t))
+	if err != nil {
+		t.Fatalf("db.Open() error: %v", err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+	authSvc := auth.NewService(sqlDB, "unused", "unused", "unused")
+
+	userID, token := loginTestUserForStats(t, sqlDB, "web-stats-"+t.Name()+"@example.com")
+
+	// One finished game, so the page has something to show beyond zeros.
+	gameID := "web-stats-test-game"
+	if _, err := sqlDB.ExecContext(context.Background(), `
+		INSERT INTO games (id, user_id, difficulty, givens, current, solution, mistakes, max_mistakes, status)
+		VALUES ($1, $2, $3, $4, $4, $4, 2, 5, 'solved')`,
+		gameID, userID, int(sudoku.Medium), strings.Repeat("0", 81)); err != nil {
+		t.Fatalf("insert finished game fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB.ExecContext(context.Background(), "DELETE FROM games WHERE id = $1", gameID)
+	})
+
+	h := NewHandler(game.NewStore(), nil, authSvc, sqlDB, false)
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.stats(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "medium") {
+		t.Error("stats page body doesn't mention the medium difficulty row")
+	}
+	if !strings.Contains(body, "Solved") {
+		t.Error("stats page body doesn't show the solved game in the history list")
 	}
 }

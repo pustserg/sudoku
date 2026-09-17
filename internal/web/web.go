@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"errors"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -59,6 +60,7 @@ func NewHandler(anonStore game.GameStore, puzzles game.PuzzleLookup, authSvc *au
 // Register adds this Handler's routes to mux.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", h.home)
+	mux.HandleFunc("GET /stats", h.stats)
 	mux.HandleFunc("POST /play", h.createGame)
 	mux.HandleFunc("GET /play/{id}", h.showBoard)
 	mux.HandleFunc("POST /play/{id}/moves", h.submitMove)
@@ -125,6 +127,109 @@ func (h *Handler) home(w http.ResponseWriter, r *http.Request) {
 	view := homeView{LoggedIn: email != "", Email: email}
 	if err := templates.ExecuteTemplate(w, "home", view); err != nil {
 		log.Printf("web: render home: %v", err)
+	}
+}
+
+// difficultyStatsView is the template data for one difficulty's row in
+// the stats table.
+type difficultyStatsView struct {
+	Name         string
+	Played       int
+	Solved       int
+	Failed       int
+	WinRatePct   int    // 0-100; 0 when Played == 0
+	AvgMistakes  string // formatted to 1 decimal, "—" when Played == 0
+	BestMistakes string // "—" when Solved == 0
+}
+
+// recentGameView is the template data for one row in the recent-games
+// history list.
+type recentGameView struct {
+	DifficultyName string
+	Solved         bool
+	Mistakes       int
+	When           string
+}
+
+// statsView is the template data for the /stats page.
+type statsView struct {
+	Email       string
+	Difficulty  []difficultyStatsView
+	RecentGames []recentGameView
+}
+
+func newStatsView(email string, stats []db.DifficultyStats, recent []db.GameSummary) statsView {
+	view := statsView{Email: email, Difficulty: make([]difficultyStatsView, len(stats))}
+	for i, s := range stats {
+		winRate := 0
+		if s.Played > 0 {
+			winRate = int(float64(s.Solved) / float64(s.Played) * 100)
+		}
+		avg := "—"
+		if s.Played > 0 {
+			avg = fmt.Sprintf("%.1f", s.AvgMistakes)
+		}
+		best := "—"
+		if s.BestMistakes != nil {
+			best = fmt.Sprintf("%d", *s.BestMistakes)
+		}
+		view.Difficulty[i] = difficultyStatsView{
+			Name:         game.DifficultyName(s.Difficulty),
+			Played:       s.Played,
+			Solved:       s.Solved,
+			Failed:       s.Failed,
+			WinRatePct:   winRate,
+			AvgMistakes:  avg,
+			BestMistakes: best,
+		}
+	}
+	view.RecentGames = make([]recentGameView, len(recent))
+	for i, g := range recent {
+		view.RecentGames[i] = recentGameView{
+			DifficultyName: game.DifficultyName(g.Difficulty),
+			Solved:         g.Status == "solved",
+			Mistakes:       g.Mistakes,
+			When:           g.UpdatedAt.Format("02 Jan 2006 15:04"),
+		}
+	}
+	return view
+}
+
+// recentGamesLimit is how many of a user's most recent finished games
+// the /stats page's history list shows.
+const recentGamesLimit = 20
+
+func (h *Handler) stats(w http.ResponseWriter, r *http.Request) {
+	if h.auth == nil {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	user, err := h.auth.Authenticate(r.Context(), auth.FromRequest(r))
+	if err != nil {
+		if authFallbackToAnon(err) {
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
+		log.Printf("web: authenticate failed: %v", err)
+		http.Error(w, "could not authenticate request", http.StatusInternalServerError)
+		return
+	}
+
+	stats, err := db.UserStats(r.Context(), h.sqlDB, user.ID)
+	if err != nil {
+		log.Printf("web: user stats failed: %v", err)
+		http.Error(w, "could not load stats", http.StatusInternalServerError)
+		return
+	}
+	recent, err := db.RecentGames(r.Context(), h.sqlDB, user.ID, recentGamesLimit)
+	if err != nil {
+		log.Printf("web: recent games failed: %v", err)
+		http.Error(w, "could not load history", http.StatusInternalServerError)
+		return
+	}
+
+	if err := templates.ExecuteTemplate(w, "stats", newStatsView(user.Email, stats, recent)); err != nil {
+		log.Printf("web: render stats: %v", err)
 	}
 }
 

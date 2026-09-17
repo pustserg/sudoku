@@ -1,0 +1,57 @@
+{{define "home"}}
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sudoku</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background: #f4f7fc;
+    color: #1a2b4c;
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .card {
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 4px 16px rgba(26,43,76,0.10);
+    padding: 40px 32px;
+    text-align: center;
+    width: min(90vw, 360px);
+  }
+  h1 { margin: 0 0 4px; font-size: 1.8rem; }
+  p.tagline { color: #7188b8; margin: 0 0 28px; }
+  form { display: grid; gap: 12px; }
+  button {
+    padding: 14px 0;
+    border: none;
+    border-radius: 10px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    background: #eef4ff;
+    color: #3b5db8;
+  }
+  button:hover { background: #dbe7fb; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Sudoku</h1>
+  <p class="tagline">Pick a difficulty to start</p>
+  <form method="POST" action="/play">
+    <button name="difficulty" value="easy">Easy</button>
+    <button name="difficulty" value="medium">Medium</button>
+    <button name="difficulty" value="hard">Hard</button>
+    <button name="difficulty" value="expert">Expert</button>
+  </form>
+</div>
+</body>
+</html>
+{{end}}

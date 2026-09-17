@@ -351,7 +351,7 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store, _, err := h.storeFor(r)
+	store, userID, err := h.storeFor(r)
 	if err != nil {
 		log.Printf("web: authenticate failed: %v", err)
 		http.Error(w, "could not authenticate request", http.StatusInternalServerError)
@@ -360,6 +360,16 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 	g, err := store.ApplyMove(r.Context(), id, row, col, value)
 	switch {
 	case err == nil:
+		// Logged-in players land on their stats page once a game ends
+		// (won or lost) — anonymous play has no stats page to send them
+		// to, so it keeps showing the board's own Solved/Game Over
+		// banner instead. HX-Redirect makes htmx do a full-page
+		// navigation instead of swapping the board fragment.
+		if userID != 0 && (g.Solved() || g.Failed()) {
+			w.Header().Set("HX-Redirect", "/stats")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if err := templates.ExecuteTemplate(w, "board", newBoardView(g)); err != nil {
 			log.Printf("web: render board fragment: %v", err)
 		}

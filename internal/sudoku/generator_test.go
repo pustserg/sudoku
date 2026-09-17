@@ -26,6 +26,33 @@ func TestGenerateProducesValidUniquePuzzle(t *testing.T) {
 	}
 }
 
+func TestGenerateRespectsMinClueFloor(t *testing.T) {
+	// Regression test: digHoles used to dig every puzzle down to the
+	// bare uniqueness minimum (~23-27 clues) regardless of difficulty,
+	// so an "Easy" puzzle looked just as sparse as an "Expert" one. Each
+	// tier must retain at least its configured floor of givens.
+	for _, d := range []Difficulty{Easy, Medium, Hard, Expert} {
+		for seed := uint64(0); seed < 5; seed++ {
+			rng := rand.New(rand.NewPCG(uint64(d)*10+seed, seed+1))
+			p := Generate(d, rng)
+
+			clues := 0
+			for r := 0; r < 9; r++ {
+				for c := 0; c < 9; c++ {
+					if p.Givens[r][c] != 0 {
+						clues++
+					}
+				}
+			}
+
+			want := minCluesFor(d)
+			if clues < want {
+				t.Errorf("Generate(%v) seed %d: %d clues, want at least %d", d, seed, clues, want)
+			}
+		}
+	}
+}
+
 func TestGenerateTargetsRequestedDifficulty(t *testing.T) {
 	// The underlying difficulty distribution from digging holes is bimodal
 	// (Medium and Hard are comparatively rare before Generate's internal

@@ -25,7 +25,7 @@ func Generate(d Difficulty, rng *rand.Rand) Puzzle {
 	haveBest := false
 	for attempt := 0; attempt < maxGenerateAttempts; attempt++ {
 		solution := generateSolvedGrid(rng)
-		givens := digHoles(solution, rng)
+		givens := digHoles(solution, rng, minCluesFor(d))
 		actual := Rate(givens)
 		p := Puzzle{Givens: givens, Solution: solution, Difficulty: actual}
 		if actual == d {
@@ -75,18 +75,43 @@ func fillCell(g *Grid, rng *rand.Rand) bool {
 	return false
 }
 
+// minCluesFor returns the minimum number of givens digHoles should leave
+// for difficulty d. Lower difficulty tiers keep more clues, matching the
+// conventional expectation that an Easy puzzle looks easy (dense with
+// givens), not just that it happens to be solvable with basic technique.
+// Expert has no floor: dig as far as uniqueness allows, as before.
+func minCluesFor(d Difficulty) int {
+	switch d {
+	case Easy:
+		return 40
+	case Medium:
+		return 32
+	case Hard:
+		return 28
+	default: // Expert
+		return 0
+	}
+}
+
 // digHoles starts from the fully solved grid and clears cells one at a
 // time, in random order, keeping each clear only if the resulting givens
-// still have a unique solution.
-func digHoles(solution Grid, rng *rand.Rand) Grid {
+// still have a unique solution. It stops once the given count would drop
+// below minClues, even if uniqueness would allow removing more.
+func digHoles(solution Grid, rng *rand.Rand, minClues int) Grid {
 	givens := solution
+	clues := 81
 	for _, idx := range rng.Perm(81) {
+		if clues <= minClues {
+			break
+		}
 		row, col := idx/9, idx%9
 		saved := givens[row][col]
 		givens[row][col] = 0
 		if _, count := Solve(givens); count != 1 {
 			givens[row][col] = saved
+			continue
 		}
+		clues--
 	}
 	return givens
 }

@@ -67,14 +67,18 @@ type GameStore interface {
 // non-zero in g.Givens cannot be changed. Placing a non-zero value that
 // doesn't match g.Solution still fills the cell (so the player can see
 // what they entered) but counts as a mistake. No further moves are
-// accepted once g.Failed() is already true. This is the single place
+// accepted once g.Failed() or g.Solved() is already true — this matters
+// beyond the in-memory store: db.GameStore.ApplyMove re-derives and
+// persists status from the game state on every move, so an accepted
+// move on an already-solved game would write status back to
+// 'in_progress' on a solved row. This is the single place
 // move-validation rules live — both GameStore implementations call it
 // after loading their own copy of the Game.
 func ApplyMove(g *Game, row, col, value int) error {
 	if row < 0 || row > 8 || col < 0 || col > 8 || value < 0 || value > 9 {
 		return ErrOutOfRange
 	}
-	if g.Failed() {
+	if g.Failed() || g.Solved() {
 		return ErrGameOver
 	}
 	if g.Givens[row][col] != 0 {

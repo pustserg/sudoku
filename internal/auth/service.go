@@ -187,11 +187,27 @@ func TokenHashForTest(token string) []byte {
 
 // FromRequest returns the session token carried by r: the CookieName
 // cookie (web UI) if present, otherwise the "Authorization: Bearer
-// <token>" header (API clients), otherwise "".
+// <token>" header (API clients), otherwise "". Only internal/web (whose
+// clients are cookie-authenticated browsers) should use this; see
+// FromRequestBearerOnly for why internal/api must not.
 func FromRequest(r *http.Request) string {
 	if c, err := r.Cookie(CookieName); err == nil && c.Value != "" {
 		return c.Value
 	}
+	return FromRequestBearerOnly(r)
+}
+
+// FromRequestBearerOnly returns the session token from the
+// "Authorization: Bearer <token>" header only, never from the
+// CookieName cookie, otherwise "". internal/api must use this instead
+// of FromRequest: a browser automatically attaches cookies to
+// cross-origin requests, so if the JSON API honored the session cookie
+// too, a malicious site could fire a cross-origin POST to
+// /api/games(/{id}/moves) and ride the victim's session cookie — a CSRF
+// vector with no same-origin defense for a JSON endpoint. Bearer tokens
+// are never sent automatically by the browser, so they carry no such
+// risk.
+func FromRequestBearerOnly(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
 	}

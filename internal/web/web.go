@@ -35,12 +35,24 @@ type Handler struct {
 	puzzles   game.PuzzleLookup
 	auth      *auth.Service
 	sqlDB     *sql.DB
+	// secureCookies sets the Secure attribute on the session and OAuth
+	// state cookies. It must be false for local HTTP development
+	// (http://localhost:...) — a Secure cookie is never sent back by the
+	// browser over plain HTTP, which would break login entirely — and
+	// true in any real deployment, which is always HTTPS. Callers derive
+	// this from whether the configured Google OAuth redirect URL is
+	// https://, rather than hardcoding it, so dev and prod both work
+	// without a separate flag.
+	secureCookies bool
 }
 
 // NewHandler returns a Handler. See api.NewHandler's doc comment for
-// the meaning of each parameter — the two packages mirror each other.
-func NewHandler(anonStore game.GameStore, puzzles game.PuzzleLookup, authSvc *auth.Service, sqlDB *sql.DB) *Handler {
-	return &Handler{anonStore: anonStore, puzzles: puzzles, auth: authSvc, sqlDB: sqlDB}
+// the meaning of anonStore/puzzles/authSvc/sqlDB — the two packages
+// mirror each other for those. secureCookies controls the Secure
+// attribute on cookies this Handler sets; see the Handler.secureCookies
+// field doc for how callers should derive it.
+func NewHandler(anonStore game.GameStore, puzzles game.PuzzleLookup, authSvc *auth.Service, sqlDB *sql.DB, secureCookies bool) *Handler {
+	return &Handler{anonStore: anonStore, puzzles: puzzles, auth: authSvc, sqlDB: sqlDB, secureCookies: secureCookies}
 }
 
 // Register adds this Handler's routes to mux.
@@ -55,16 +67,36 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 // storeFor mirrors api.Handler.storeFor: a user-scoped db.GameStore if r
-// carries a valid session, otherwise h.anonStore.
-func (h *Handler) storeFor(r *http.Request) game.GameStore {
+// carries a valid session, h.anonStore if r carries no session, or a
+// non-nil error if Authenticate itself failed (e.g. a database error) —
+// that must NOT be treated the same as "no session", or a user who
+// thinks they're logged in would silently get an unpersisted anonymous
+// game. Callers must check the error and fail the request (500) rather
+// than proceeding on the returned store.
+//
+// Unlike internal/api, this legitimately uses auth.FromRequest (cookie
+// then bearer), since the web UI's clients are cookie-authenticated
+// browsers.
+func (h *Handler) storeFor(r *http.Request) (game.GameStore, error) {
 	if h.auth == nil {
-		return h.anonStore
+		return h.anonStore, nil
 	}
 	user, err := h.auth.Authenticate(r.Context(), auth.FromRequest(r))
-	if err != nil {
-		return h.anonStore
+	if err == nil {
+		return db.NewGameStore(h.sqlDB, user.ID), nil
 	}
-	return db.NewGameStore(h.sqlDB, user.ID)
+	if authFallbackToAnon(err) {
+		return h.anonStore, nil
+	}
+	return nil, err
+}
+
+// authFallbackToAnon mirrors api.authFallbackToAnon: reports whether an
+// error from auth.Service.Authenticate means "no session, proceed
+// anonymously" (true, for auth.ErrNoSession) versus a genuine failure
+// that must be propagated as a server error (false).
+func authFallbackToAnon(err error) bool {
+	return errors.Is(err, auth.ErrNoSession)
 }
 
 // currentUserEmail returns the signed-in user's email for r, or "" if
@@ -107,7 +139,13 @@ func (h *Handler) createGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	g, err := h.storeFor(r).Create(r.Context(), p)
+	store, err := h.storeFor(r)
+	if err != nil {
+		log.Printf("web: authenticate failed: %v", err)
+		http.Error(w, "could not authenticate request", http.StatusInternalServerError)
+		return
+	}
+	g, err := store.Create(r.Context(), p)
 	if err != nil {
 		log.Printf("web: create game failed: %v", err)
 		http.Error(w, "could not create game", http.StatusInternalServerError)
@@ -167,7 +205,13 @@ func newBoardView(g *game.Game) boardView {
 
 func (h *Handler) showBoard(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	g, err := h.storeFor(r).Get(r.Context(), id)
+	store, err := h.storeFor(r)
+	if err != nil {
+		log.Printf("web: authenticate failed: %v", err)
+		http.Error(w, "could not authenticate request", http.StatusInternalServerError)
+		return
+	}
+	g, err := store.Get(r.Context(), id)
 	if errors.Is(err, game.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -193,7 +237,13 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	g, err := h.storeFor(r).ApplyMove(r.Context(), id, row, col, value)
+	store, err := h.storeFor(r)
+	if err != nil {
+		log.Printf("web: authenticate failed: %v", err)
+		http.Error(w, "could not authenticate request", http.StatusInternalServerError)
+		return
+	}
+	g, err := store.ApplyMove(r.Context(), id, row, col, value)
 	switch {
 	case err == nil:
 		if err := templates.ExecuteTemplate(w, "board", newBoardView(g)); err != nil {
@@ -211,6 +261,41 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// newStateCookie builds the anti-CSRF OAuth state cookie (or, with
+// maxAge -1 and value "", the cookie that clears it). SameSite=Lax
+// (not Strict) is required here: the state cookie must survive the
+// top-level, cross-site GET redirect back from Google's consent
+// screen, which SameSite=Strict would block, dropping the cookie and
+// failing every login. Secure is h.secureCookies, not hardcoded true,
+// so local HTTP development keeps working — see the Handler.
+// secureCookies field doc.
+func (h *Handler) newStateCookie(value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name:     stateCookieName,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.secureCookies,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   maxAge,
+	}
+}
+
+// newSessionCookie builds the session cookie (or, with maxAge -1 and
+// value "", the cookie that clears it on logout). Same SameSite/Secure
+// reasoning as newStateCookie.
+func (h *Handler) newSessionCookie(value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name:     auth.CookieName,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.secureCookies,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   maxAge,
+	}
+}
+
 func (h *Handler) googleLogin(w http.ResponseWriter, r *http.Request) {
 	state, err := auth.RandomToken(16)
 	if err != nil {
@@ -218,13 +303,7 @@ func (h *Handler) googleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not start login", http.StatusInternalServerError)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     stateCookieName,
-		Value:    state,
-		Path:     "/",
-		HttpOnly: true,
-		MaxAge:   600, // 10 minutes: long enough for a login round trip, short-lived by design
-	})
+	http.SetCookie(w, h.newStateCookie(state, 600)) // 10 minutes: long enough for a login round trip, short-lived by design
 	http.Redirect(w, r, h.auth.LoginURL(state), http.StatusFound)
 }
 
@@ -234,7 +313,7 @@ func (h *Handler) googleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid oauth state", http.StatusBadRequest)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: stateCookieName, Value: "", Path: "/", MaxAge: -1})
+	http.SetCookie(w, h.newStateCookie("", -1))
 
 	token, err := h.auth.HandleCallback(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
@@ -242,13 +321,7 @@ func (h *Handler) googleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "login failed", http.StatusInternalServerError)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     auth.CookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		MaxAge:   sessionCookieMaxAge,
-	})
+	http.SetCookie(w, h.newSessionCookie(token, sessionCookieMaxAge))
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -256,6 +329,6 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	if err := h.auth.Logout(r.Context(), auth.FromRequest(r)); err != nil {
 		log.Printf("web: logout: %v", err)
 	}
-	http.SetCookie(w, &http.Cookie{Name: auth.CookieName, Value: "", Path: "/", MaxAge: -1})
+	http.SetCookie(w, h.newSessionCookie("", -1))
 	http.Redirect(w, r, "/", http.StatusFound)
 }

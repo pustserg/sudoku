@@ -68,6 +68,8 @@ func TestStoreApplyMove(t *testing.T) {
 	s := NewStore()
 	g := mustCreate(t, s, testPuzzle())
 
+	// testPuzzle has exactly one non-given cell ([0][1]), so filling it
+	// with the correct value (3) solves the game.
 	updated, err := s.ApplyMove(ctx, g.ID, 0, 1, 3)
 	if err != nil {
 		t.Fatalf("ApplyMove() error = %v, want nil", err)
@@ -75,13 +77,15 @@ func TestStoreApplyMove(t *testing.T) {
 	if updated.Current[0][1] != 3 {
 		t.Errorf("Current[0][1] = %d, want 3", updated.Current[0][1])
 	}
-
-	updated, err = s.ApplyMove(ctx, g.ID, 0, 1, 0)
-	if err != nil {
-		t.Fatalf("ApplyMove() clearing cell error = %v, want nil", err)
+	if !updated.Solved() {
+		t.Fatalf("Solved() = false after filling in the last cell, want true")
 	}
-	if updated.Current[0][1] != 0 {
-		t.Errorf("Current[0][1] = %d, want 0 after clearing", updated.Current[0][1])
+
+	// Once solved, even a no-op-looking move (clearing the cell back
+	// out) must be rejected — see TestApplyMoveRejectedAfterSolved for
+	// why this matters beyond the in-memory store.
+	if _, err := s.ApplyMove(ctx, g.ID, 0, 1, 0); err != ErrGameOver {
+		t.Errorf("ApplyMove() clearing cell on a solved game: error = %v, want ErrGameOver", err)
 	}
 }
 
@@ -356,6 +360,29 @@ func TestApplyMoveRejectedAfterGameOver(t *testing.T) {
 
 	if _, err := s.ApplyMove(ctx, g.ID, 0, 1, 3); err != ErrGameOver {
 		t.Errorf("ApplyMove() after game over: error = %v, want ErrGameOver", err)
+	}
+}
+
+// TestApplyMoveRejectedAfterSolved guards against a real bug: once a
+// game is solved, any further move (even a harmless one) must be
+// rejected. Without this check, db.GameStore.ApplyMove would re-derive
+// and persist status = 'in_progress' onto an already-solved row, which
+// can then collide with the one-active-game-per-difficulty constraint.
+func TestApplyMoveRejectedAfterSolved(t *testing.T) {
+	s := NewStore()
+	p := testPuzzle() // solution[0][0] == 5, solution[0][1] == 3, givens[0][0] == 5
+	g := mustCreate(t, s, p)
+
+	got, err := s.ApplyMove(ctx, g.ID, 0, 1, 3) // the only non-given cell; solves the game
+	if err != nil {
+		t.Fatalf("ApplyMove() error = %v, want nil", err)
+	}
+	if !got.Solved() {
+		t.Fatalf("Solved() = false after filling in the last cell, want true")
+	}
+
+	if _, err := s.ApplyMove(ctx, g.ID, 0, 1, 0); err != ErrGameOver {
+		t.Errorf("ApplyMove() after game solved: error = %v, want ErrGameOver", err)
 	}
 }
 

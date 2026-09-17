@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -185,9 +187,11 @@ func TestGetGameNotFound(t *testing.T) {
 
 func TestSubmitMove(t *testing.T) {
 	h, store := testHandler()
-	var givens sudoku.Grid
+	var givens, solution sudoku.Grid
 	givens[0][0] = 5
-	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
+	solution[0][0] = 5
+	solution[0][1] = 3 // != givens[0][1] (0), so the game isn't already solved at creation
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: sudoku.Easy})
 	mux := newMux(h)
 
 	body := `{"row":0,"col":1,"value":7}`
@@ -209,9 +213,11 @@ func TestSubmitMove(t *testing.T) {
 
 func TestSubmitMoveOnGivenCell(t *testing.T) {
 	h, store := testHandler()
-	var givens sudoku.Grid
+	var givens, solution sudoku.Grid
 	givens[0][0] = 5
-	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
+	solution[0][0] = 5
+	solution[0][1] = 3 // != givens[0][1] (0), so the game isn't already solved at creation
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: sudoku.Easy})
 	mux := newMux(h)
 
 	body := `{"row":0,"col":0,"value":9}`
@@ -256,11 +262,13 @@ func TestSubmitMoveUnknownGame(t *testing.T) {
 
 func TestSubmitMoveWrongValueIncrementsMistakes(t *testing.T) {
 	h, store := testHandler()
-	var givens sudoku.Grid
+	var givens, solution sudoku.Grid
 	givens[0][0] = 5
-	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy}) // solution[0][1] == 0
+	solution[0][0] = 5
+	solution[0][1] = 3 // != givens[0][1] (0), so the game isn't already solved at creation
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: sudoku.Easy})
 
-	body := `{"row":0,"col":1,"value":9}` // wrong: solution wants 0 here
+	body := `{"row":0,"col":1,"value":9}` // wrong: solution wants 3 here
 	req := httptest.NewRequest(http.MethodPost, "/api/games/"+g.ID+"/moves", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
 	mux := newMux(h)
@@ -286,8 +294,9 @@ func TestSubmitMoveWrongValueIncrementsMistakes(t *testing.T) {
 
 func TestSubmitMoveAfterGameOver(t *testing.T) {
 	h, store := testHandler()
-	var givens sudoku.Grid
-	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Hard}) // MaxMistakes == 3, solution[0][1] == 0
+	var givens, solution sudoku.Grid
+	solution[0][1] = 3 // != givens[0][1] (0), so the game isn't already solved at creation
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: sudoku.Hard}) // MaxMistakes == 3
 	mux := newMux(h)
 
 	for i := 0; i < 3; i++ {
@@ -322,21 +331,40 @@ func TestCreateGameUsesDBStoreWhenAuthenticated(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
 	}
+	var state gameState
+	if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB.ExecContext(context.Background(), "DELETE FROM games WHERE id = $1", state.ID)
+	})
 
+	// Scoped to this test's own game id, not a table-wide count: a
+	// table-wide SELECT/DELETE here would give false failures against a
+	// database with other rows already in it, and would destroy any
+	// developer's real local game data if run against their dev DB.
 	var count int
-	if err := sqlDB.QueryRowContext(context.Background(), "SELECT count(*) FROM games").Scan(&count); err != nil {
+	if err := sqlDB.QueryRowContext(context.Background(), "SELECT count(*) FROM games WHERE id = $1", state.ID).Scan(&count); err != nil {
 		t.Fatalf("query games count: %v", err)
 	}
 	if count == 0 {
 		t.Error("no row was written to the games table for an authenticated create")
 	}
-	t.Cleanup(func() {
-		sqlDB.ExecContext(context.Background(), "DELETE FROM games")
-	})
 }
 
 func TestCreateGameAnonymousDoesNotTouchDB(t *testing.T) {
 	h, _, sqlDB := testHandlerWithAuth(t)
+
+	// Anonymous play never gets its own row to scope by (that's the
+	// point being tested), so this compares a before/after count of the
+	// whole table instead of asserting it's 0 outright or deleting from
+	// it: that avoids both a false failure against a database that
+	// already has other rows in it, and destroying any developer's real
+	// local game data if this suite is run against their dev DB.
+	var before int
+	if err := sqlDB.QueryRowContext(context.Background(), "SELECT count(*) FROM games").Scan(&before); err != nil {
+		t.Fatalf("query games count before: %v", err)
+	}
 
 	req := httptest.NewRequest("POST", "/api/games", bytes.NewBufferString(`{"difficulty":"easy"}`))
 	rec := httptest.NewRecorder()
@@ -346,13 +374,12 @@ func TestCreateGameAnonymousDoesNotTouchDB(t *testing.T) {
 		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
 	}
 
-	var count int
-	if err := sqlDB.QueryRowContext(context.Background(), "SELECT count(*) FROM games").Scan(&count); err != nil {
-		t.Fatalf("query games count: %v", err)
+	var after int
+	if err := sqlDB.QueryRowContext(context.Background(), "SELECT count(*) FROM games").Scan(&after); err != nil {
+		t.Fatalf("query games count after: %v", err)
 	}
-	if count != 0 {
-		t.Errorf("anonymous create wrote %d rows to games, want 0", count)
-		sqlDB.ExecContext(context.Background(), "DELETE FROM games")
+	if after != before {
+		t.Errorf("games table row count changed from %d to %d after an anonymous create, want unchanged", before, after)
 	}
 }
 
@@ -375,5 +402,26 @@ func TestLogoutClearsSession(t *testing.T) {
 	}
 	if count != 0 {
 		t.Error("session row still exists after logout")
+	}
+}
+
+// TestAuthFallbackToAnon exercises storeFor's error-classification
+// logic in isolation. Triggering a genuine non-ErrNoSession failure out
+// of a real auth.Service.Authenticate would need fault injection into
+// the database connection, which isn't practical here — this unit test
+// instead pins the classification rule storeFor depends on: only
+// auth.ErrNoSession means "fall back to anonymous," anything else must
+// be propagated as a real error.
+func TestAuthFallbackToAnon(t *testing.T) {
+	if !authFallbackToAnon(auth.ErrNoSession) {
+		t.Error("authFallbackToAnon(auth.ErrNoSession) = false, want true")
+	}
+	if !authFallbackToAnon(fmt.Errorf("lookup session: %w", auth.ErrNoSession)) {
+		t.Error("authFallbackToAnon(wrapped auth.ErrNoSession) = false, want true (errors.Is should still match)")
+	}
+
+	other := errors.New("boom: database connection lost")
+	if authFallbackToAnon(other) {
+		t.Error("authFallbackToAnon(other error) = true, want false: a genuine failure must not be silently treated as no-session")
 	}
 }

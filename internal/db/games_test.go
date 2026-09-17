@@ -264,6 +264,63 @@ func TestGameStoreApplyMove(t *testing.T) {
 	}
 }
 
+// TestGameStoreApplyMoveRejectedAfterSolved guards against the bug
+// where ApplyMove re-derives and persists status on every move: once a
+// game is solved, a further move must be rejected and must NOT
+// overwrite the row's status back to 'in_progress' (which could then
+// collide with games_one_active_per_difficulty if the user has since
+// started a new game at that difficulty).
+func TestGameStoreApplyMoveRejectedAfterSolved(t *testing.T) {
+	url := testDatabaseURL(t)
+	sqlDB, err := Open(url)
+	if err != nil {
+		t.Fatalf("Open() error: %v", err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+
+	ctx := context.Background()
+	userID := testUser(t, sqlDB)
+	store := NewGameStore(sqlDB, userID)
+
+	g, err := store.Create(ctx, testGamePuzzle()) // only non-given cell is [0][1], solution wants 3
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+
+	solved, err := store.ApplyMove(ctx, g.ID, 0, 1, 3) // solves it
+	if err != nil {
+		t.Fatalf("ApplyMove() to solve error = %v, want nil", err)
+	}
+	if !solved.Solved() {
+		t.Fatalf("Solved() = false after filling in the last cell, want true")
+	}
+
+	statusAfterSolve := gameStatus(t, sqlDB, g.ID)
+	if statusAfterSolve != "solved" {
+		t.Fatalf("status after solving = %q, want %q", statusAfterSolve, "solved")
+	}
+
+	if _, err := store.ApplyMove(ctx, g.ID, 0, 1, 0); err != game.ErrGameOver {
+		t.Errorf("ApplyMove() on already-solved game: error = %v, want game.ErrGameOver", err)
+	}
+
+	statusAfterRejectedMove := gameStatus(t, sqlDB, g.ID)
+	if statusAfterRejectedMove != "solved" {
+		t.Errorf("status after rejected move on solved game = %q, want %q (must not be overwritten)", statusAfterRejectedMove, "solved")
+	}
+}
+
+// gameStatus queries the games.status column directly, bypassing
+// scanGame (which doesn't select it), so tests can assert on it.
+func gameStatus(t *testing.T, sqlDB *sql.DB, id string) string {
+	t.Helper()
+	var status string
+	if err := sqlDB.QueryRowContext(context.Background(), "SELECT status FROM games WHERE id = $1", id).Scan(&status); err != nil {
+		t.Fatalf("query game status: %v", err)
+	}
+	return status
+}
+
 func TestGameStoreApplyMoveUnknownGame(t *testing.T) {
 	url := testDatabaseURL(t)
 	sqlDB, err := Open(url)

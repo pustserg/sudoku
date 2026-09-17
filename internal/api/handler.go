@@ -42,16 +42,37 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 // storeFor returns the GameStore to use for r: a user-scoped
-// db.GameStore if r carries a valid session, otherwise h.anonStore.
-func (h *Handler) storeFor(r *http.Request) game.GameStore {
+// db.GameStore if r carries a valid session, h.anonStore if r carries
+// no session, or a non-nil error if Authenticate itself failed (e.g. a
+// database error) — that must NOT be treated the same as "no session",
+// or a user who thinks they're logged in would silently get an
+// unpersisted anonymous game. Callers must check the error and fail the
+// request (500) rather than proceeding on the returned store.
+//
+// Uses auth.FromRequestBearerOnly, not auth.FromRequest: internal/api
+// is a bearer-token JSON API and must not also honor the session
+// cookie, or it becomes reachable via CSRF from a browser that's logged
+// into the web UI (see FromRequestBearerOnly's doc comment).
+func (h *Handler) storeFor(r *http.Request) (game.GameStore, error) {
 	if h.auth == nil {
-		return h.anonStore
+		return h.anonStore, nil
 	}
-	user, err := h.auth.Authenticate(r.Context(), auth.FromRequest(r))
-	if err != nil {
-		return h.anonStore
+	user, err := h.auth.Authenticate(r.Context(), auth.FromRequestBearerOnly(r))
+	if err == nil {
+		return db.NewGameStore(h.sqlDB, user.ID), nil
 	}
-	return db.NewGameStore(h.sqlDB, user.ID)
+	if authFallbackToAnon(err) {
+		return h.anonStore, nil
+	}
+	return nil, err
+}
+
+// authFallbackToAnon reports whether an error from auth.Service.
+// Authenticate means "no session, proceed anonymously" (true, for
+// auth.ErrNoSession) versus a genuine failure that must be propagated
+// as a server error rather than silently downgraded (false).
+func authFallbackToAnon(err error) bool {
+	return errors.Is(err, auth.ErrNoSession)
 }
 
 type gameState struct {
@@ -101,7 +122,13 @@ func (h *Handler) createGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	g, err := h.storeFor(r).Create(r.Context(), p)
+	store, err := h.storeFor(r)
+	if err != nil {
+		log.Printf("api: authenticate failed: %v", err)
+		writeError(w, http.StatusInternalServerError, "could not authenticate request")
+		return
+	}
+	g, err := store.Create(r.Context(), p)
 	if err != nil {
 		log.Printf("api: create game failed: %v", err)
 		writeError(w, http.StatusInternalServerError, "could not create game")
@@ -112,7 +139,13 @@ func (h *Handler) createGame(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getGame(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	g, err := h.storeFor(r).Get(r.Context(), id)
+	store, err := h.storeFor(r)
+	if err != nil {
+		log.Printf("api: authenticate failed: %v", err)
+		writeError(w, http.StatusInternalServerError, "could not authenticate request")
+		return
+	}
+	g, err := store.Get(r.Context(), id)
 	if errors.Is(err, game.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "game not found")
 		return
@@ -140,7 +173,13 @@ func (h *Handler) submitMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	g, err := h.storeFor(r).ApplyMove(r.Context(), id, req.Row, req.Col, req.Value)
+	store, err := h.storeFor(r)
+	if err != nil {
+		log.Printf("api: authenticate failed: %v", err)
+		writeError(w, http.StatusInternalServerError, "could not authenticate request")
+		return
+	}
+	g, err := store.ApplyMove(r.Context(), id, req.Row, req.Col, req.Value)
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusOK, toGameState(g))
@@ -180,7 +219,7 @@ func (h *Handler) googleCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
-	if err := h.auth.Logout(r.Context(), auth.FromRequest(r)); err != nil {
+	if err := h.auth.Logout(r.Context(), auth.FromRequestBearerOnly(r)); err != nil {
 		log.Printf("api: logout failed: %v", err)
 		writeError(w, http.StatusInternalServerError, "logout failed")
 		return

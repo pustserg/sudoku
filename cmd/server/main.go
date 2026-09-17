@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -45,10 +46,16 @@ func main() {
 		return db.RandomPuzzle(ctx, sqlDB, d)
 	})
 
+	// secureCookies mirrors whether this deployment is actually served
+	// over HTTPS: true wherever GoogleRedirectURL is https:// (every
+	// real deployment), false for local http://localhost dev, where a
+	// Secure cookie would never be sent back and login would break.
+	secureCookies := strings.HasPrefix(cfg.GoogleRedirectURL, "https://")
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler)
 	api.NewHandler(anonStore, puzzleLookup, authSvc, sqlDB).Register(mux)
-	web.NewHandler(anonStore, puzzleLookup, authSvc, sqlDB).Register(mux)
+	web.NewHandler(anonStore, puzzleLookup, authSvc, sqlDB, secureCookies).Register(mux)
 
 	addr := ":" + cfg.Port
 	log.Printf("listening on %s", addr)

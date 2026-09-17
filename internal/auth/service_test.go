@@ -227,3 +227,37 @@ func TestFromRequestNone(t *testing.T) {
 		t.Errorf("FromRequest() = %q, want \"\"", got)
 	}
 }
+
+func TestFromRequestBearerOnlyHeader(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("Authorization", "Bearer header-token")
+	if got := FromRequestBearerOnly(r); got != "header-token" {
+		t.Errorf("FromRequestBearerOnly() = %q, want %q", got, "header-token")
+	}
+}
+
+func TestFromRequestBearerOnlyNone(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	if got := FromRequestBearerOnly(r); got != "" {
+		t.Errorf("FromRequestBearerOnly() = %q, want \"\"", got)
+	}
+}
+
+// TestFromRequestBearerOnlyIgnoresCookie is the load-bearing case: even
+// when a session cookie is present on the request, FromRequestBearerOnly
+// must not return it — only FromRequest (used by internal/web) does
+// that. This is what makes internal/api immune to the cookie-riding
+// CSRF vector described in FromRequestBearerOnly's doc comment.
+func TestFromRequestBearerOnlyIgnoresCookie(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.AddCookie(&http.Cookie{Name: CookieName, Value: "cookie-token"})
+
+	if got := FromRequestBearerOnly(r); got != "" {
+		t.Errorf("FromRequestBearerOnly() = %q, want \"\" (must not read the cookie)", got)
+	}
+	// Sanity check that the cookie really is on the request and that
+	// FromRequest (the cookie-honoring variant) would have returned it.
+	if got := FromRequest(r); got != "cookie-token" {
+		t.Errorf("FromRequest() = %q, want %q (sanity check that the cookie was actually set)", got, "cookie-token")
+	}
+}

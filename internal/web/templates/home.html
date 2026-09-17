@@ -27,6 +27,9 @@
   }
   h1 { margin: 0 0 4px; font-size: 1.8rem; }
   p.tagline { color: #7188b8; margin: 0 0 28px; }
+  p.account { color: #7188b8; margin: 0 0 20px; font-size: 0.9rem; }
+  p.account a { color: #3b5db8; text-decoration: none; font-weight: 600; }
+  p.account a:hover { text-decoration: underline; }
   form { display: grid; gap: 12px; }
   button {
     padding: 14px 0;
@@ -45,6 +48,12 @@
 <div class="card">
   <h1>Sudoku</h1>
   <p class="tagline">Pick a difficulty to start</p>
+  {{if .LoggedIn}}
+  <p class="account">Signed in as {{.Email}} · <a href="#" onclick="document.getElementById('logout-form').submit(); return false;">Log out</a></p>
+  <form id="logout-form" method="POST" action="/logout" style="display:none;"></form>
+  {{else}}
+  <p class="account"><a href="/auth/google/login">Sign in with Google</a></p>
+  {{end}}
   <form method="POST" action="/play">
     <button name="difficulty" value="easy">Easy</button>
     <button name="difficulty" value="medium">Medium</button>

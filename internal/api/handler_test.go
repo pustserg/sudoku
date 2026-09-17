@@ -295,7 +295,7 @@ func TestSubmitMoveWrongValueIncrementsMistakes(t *testing.T) {
 func TestSubmitMoveAfterGameOver(t *testing.T) {
 	h, store := testHandler()
 	var givens, solution sudoku.Grid
-	solution[0][1] = 3 // != givens[0][1] (0), so the game isn't already solved at creation
+	solution[0][1] = 3                                                                                    // != givens[0][1] (0), so the game isn't already solved at creation
 	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: sudoku.Hard}) // MaxMistakes == 3
 	mux := newMux(h)
 

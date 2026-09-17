@@ -171,6 +171,20 @@ required). Real values already exist in the user's local `.env`
 `GOOGLE_REDIRECT_URL` to `.env`/`.env.example` and wires all three into
 `Config`.
 
+## Auto-run migrations on server start
+
+Today, `docker compose up` / `go run ./cmd/migrate up` is a separate manual
+step before `go run ./cmd/server` (see README "Getting started" steps 2-4).
+Since this phase adds new migrations, `cmd/server/main.go` now runs them
+automatically on startup, using the same `golang-migrate` library
+`cmd/migrate` already uses (`migrate.New("file://migrations", cfg.DatabaseURL)`,
+`.Up()`, ignoring `migrate.ErrNoChange`) — no new dependency, one shared
+code path. A real error (bad SQL, dirty migration state) still fails
+server startup fast, same as the existing `DATABASE_URL` check. This
+replaces manual step 2 in the README's "Getting started" section (the
+`cmd/migrate` binary itself stays, for `down` and any manual/CI use); the
+Makefile's `run` target no longer needs to run migrate first either.
+
 ## Testing
 
 - `internal/game`: existing `ApplyMove` tests move to exercise the

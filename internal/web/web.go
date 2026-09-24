@@ -2,6 +2,7 @@
 package web
 
 import (
+	"bytes"
 	"database/sql"
 	"embed"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/pustserg/sudoku/internal/db"
 	"github.com/pustserg/sudoku/internal/game"
 	"github.com/pustserg/sudoku/internal/sudoku"
+	"github.com/pustserg/sudoku/internal/ws"
 )
 
 //go:embed templates/*.html
@@ -46,15 +48,16 @@ type Handler struct {
 	// https://, rather than hardcoding it, so dev and prod both work
 	// without a separate flag.
 	secureCookies bool
+	hub           *ws.Hub
 }
 
 // NewHandler returns a Handler. See api.NewHandler's doc comment for
-// the meaning of anonStore/puzzles/authSvc/sqlDB — the two packages
+// the meaning of anonStore/puzzles/authSvc/sqlDB/hub — the two packages
 // mirror each other for those. secureCookies controls the Secure
 // attribute on cookies this Handler sets; see the Handler.secureCookies
 // field doc for how callers should derive it.
-func NewHandler(anonStore game.GameStore, puzzles game.PuzzleLookup, authSvc *auth.Service, sqlDB *sql.DB, secureCookies bool) *Handler {
-	return &Handler{anonStore: anonStore, puzzles: puzzles, auth: authSvc, sqlDB: sqlDB, secureCookies: secureCookies}
+func NewHandler(anonStore game.GameStore, puzzles game.PuzzleLookup, authSvc *auth.Service, sqlDB *sql.DB, secureCookies bool, hub *ws.Hub) *Handler {
+	return &Handler{anonStore: anonStore, puzzles: puzzles, auth: authSvc, sqlDB: sqlDB, secureCookies: secureCookies, hub: hub}
 }
 
 // Register adds this Handler's routes to mux.
@@ -64,6 +67,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /play", h.createGame)
 	mux.HandleFunc("GET /play/{id}", h.showBoard)
 	mux.HandleFunc("POST /play/{id}/moves", h.submitMove)
+	mux.HandleFunc("GET /ws/games/{id}", h.gameWS)
 	mux.HandleFunc("GET /auth/google/login", h.googleLogin)
 	mux.HandleFunc("GET /auth/google/callback", h.googleCallback)
 	mux.HandleFunc("POST /logout", h.logout)
@@ -84,16 +88,26 @@ func (h *Handler) Register(mux *http.ServeMux) {
 // browsers.
 func (h *Handler) storeFor(r *http.Request) (game.GameStore, int64, error) {
 	if h.auth == nil {
-		return h.anonStore, 0, nil
+		return h.wrap(h.anonStore), 0, nil
 	}
 	user, err := h.auth.Authenticate(r.Context(), auth.FromRequest(r))
 	if err == nil {
-		return db.NewGameStore(h.sqlDB, user.ID), user.ID, nil
+		return h.wrap(db.NewGameStore(h.sqlDB, user.ID)), user.ID, nil
 	}
 	if authFallbackToAnon(err) {
-		return h.anonStore, 0, nil
+		return h.wrap(h.anonStore), 0, nil
 	}
 	return nil, 0, err
+}
+
+// wrap mirrors api.Handler.wrap: makes a successful ApplyMove on store
+// publish to h.hub. A nil h.hub (tests that don't wire one) makes this
+// a passthrough.
+func (h *Handler) wrap(store game.GameStore) game.GameStore {
+	if h.hub == nil {
+		return store
+	}
+	return ws.NotifyingStore{GameStore: store, Hub: h.hub}
 }
 
 // authFallbackToAnon mirrors api.authFallbackToAnon: reports whether an
@@ -337,6 +351,43 @@ func (h *Handler) showBoard(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := templates.ExecuteTemplate(w, "boardPage", newBoardView(g)); err != nil {
 		log.Printf("web: render board page: %v", err)
+	}
+}
+
+// gameWS upgrades to a WebSocket that pushes the "board" template
+// fragment for id every time the game changes (including the moment of
+// connecting, so a fresh or reconnecting client is immediately in
+// sync — see the Phase 4 design spec's "The WS endpoint" section).
+// Authorization mirrors showBoard: storeFor resolves the caller's
+// scoped store, and store.Get failing (wrong scope, or the id doesn't
+// exist) is rejected before the WebSocket upgrade happens.
+func (h *Handler) gameWS(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	store, _, err := h.storeFor(r)
+	if err != nil {
+		log.Printf("web: authenticate failed: %v", err)
+		http.Error(w, "could not authenticate request", http.StatusInternalServerError)
+		return
+	}
+	if _, err := store.Get(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	render := func() ([]byte, error) {
+		g, err := store.Get(r.Context(), id)
+		if err != nil {
+			return nil, err
+		}
+		var buf bytes.Buffer
+		if err := templates.ExecuteTemplate(&buf, "board", newBoardView(g)); err != nil {
+			return nil, err
+		}
+		return buf.Bytes(), nil
+	}
+
+	if err := ws.ServeSubscriber(w, r, h.hub, id, render); err != nil {
+		log.Printf("web: ws subscriber for game %s: %v", id, err)
 	}
 }
 

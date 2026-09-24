@@ -115,7 +115,7 @@ func TestNewSessionCookieAttributes(t *testing.T) {
 func TestGoogleLoginSetsStateCookieWithConfiguredSecureness(t *testing.T) {
 	for _, secure := range []bool{true, false} {
 		authSvc := auth.NewService(nil, "client-id", "client-secret", "https://example.com/auth/google/callback")
-		h := NewHandler(game.NewStore(), nil, authSvc, nil, secure)
+		h := NewHandler(game.NewStore(), nil, authSvc, nil, secure, nil)
 
 		req := httptest.NewRequest(http.MethodGet, "/auth/google/login", nil)
 		rec := httptest.NewRecorder()
@@ -171,7 +171,7 @@ func TestLogoutClearsSessionCookieWithConfiguredSecureness(t *testing.T) {
 		t.Fatalf("insert test session: %v", err)
 	}
 
-	h := NewHandler(game.NewStore(), nil, authSvc, sqlDB, true)
+	h := NewHandler(game.NewStore(), nil, authSvc, sqlDB, true, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
@@ -254,7 +254,7 @@ func TestSubmitMoveRedirectsToStatsWhenAuthenticatedGameEnds(t *testing.T) {
 		sqlDB.ExecContext(context.Background(), "DELETE FROM games WHERE id = $1", gameID)
 	})
 
-	h := NewHandler(game.NewStore(), nil, authSvc, sqlDB, false)
+	h := NewHandler(game.NewStore(), nil, authSvc, sqlDB, false, nil)
 	req := httptest.NewRequest(http.MethodPost, "/play/"+gameID+"/moves",
 		strings.NewReader("row=0&col=0&value=9")) // 9 != solution's 5: a mistake
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -287,7 +287,7 @@ func TestSubmitMoveDoesNotRedirectAnonymousGameEnd(t *testing.T) {
 		}
 	}
 
-	h := NewHandler(store, nil, nil, nil, false)
+	h := NewHandler(store, nil, nil, nil, false, nil)
 	req := httptest.NewRequest(http.MethodPost, "/play/"+g.ID+"/moves",
 		strings.NewReader("row=0&col=0&value=9")) // the 3rd (final) mistake
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -307,7 +307,7 @@ func TestSubmitMoveDoesNotRedirectAnonymousGameEnd(t *testing.T) {
 }
 
 func TestStatsRedirectsAnonymous(t *testing.T) {
-	h := NewHandler(game.NewStore(), nil, nil, nil, false)
+	h := NewHandler(game.NewStore(), nil, nil, nil, false, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
 	rec := httptest.NewRecorder()
@@ -343,7 +343,7 @@ func TestStatsRendersForAuthenticatedUser(t *testing.T) {
 		sqlDB.ExecContext(context.Background(), "DELETE FROM games WHERE id = $1", gameID)
 	})
 
-	h := NewHandler(game.NewStore(), nil, authSvc, sqlDB, false)
+	h := NewHandler(game.NewStore(), nil, authSvc, sqlDB, false, nil)
 	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()

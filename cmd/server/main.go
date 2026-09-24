@@ -55,7 +55,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler)
 	api.NewHandler(anonStore, puzzleLookup, authSvc, sqlDB, nil).Register(mux)
-	web.NewHandler(anonStore, puzzleLookup, authSvc, sqlDB, secureCookies).Register(mux)
+	web.NewHandler(anonStore, puzzleLookup, authSvc, sqlDB, secureCookies, nil).Register(mux)
 
 	addr := ":" + cfg.Port
 	log.Printf("listening on %s", addr)

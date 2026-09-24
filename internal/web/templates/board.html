@@ -483,7 +483,16 @@
   }
 
   function connectWS() {
+    var opened = false;
     var socket = new WebSocket(wsURL(gameID));
+    socket.addEventListener("open", function () {
+      opened = true;
+    });
+    // If this move was submitted from this same tab, this push arrives
+    // in addition to the htmx AJAX response that already swapped the
+    // board (see submitValue). Both carry the same content and the
+    // swaps happen synchronously on the main thread, so the second
+    // swap is redundant but harmless, not a bug.
     socket.addEventListener("message", function (e) {
       var board = document.getElementById("board");
       if (!board) return;
@@ -491,7 +500,16 @@
       refreshOverlays();
     });
     socket.addEventListener("close", function () {
-      setTimeout(connectWS, 1000);
+      // The WebSocket API doesn't expose the HTTP status of a rejected
+      // upgrade — a handshake that never succeeds (wrong scope, 404,
+      // auth failure) also just fires "close". Retrying that forever
+      // would hammer the server for no benefit, since none of those
+      // causes change without a page reload. Only retry when the
+      // connection genuinely opened and later dropped (a network
+      // blip), where a fixed short retry is the right call.
+      if (opened) {
+        setTimeout(connectWS, 1000);
+      }
     });
   }
 

@@ -2,6 +2,7 @@ package ws
 
 import (
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -10,11 +11,26 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	// This is a same-origin browser client talking to its own server,
-	// not a cross-site API; the connection carries no ambient
-	// credential the server hasn't already scoped via storeFor before
-	// upgrading, so a permissive origin check adds no risk here.
-	CheckOrigin: func(r *http.Request) bool { return true },
+	// This is meant to be a same-origin browser client talking to its
+	// own server, not a cross-site page. WebSocket handshakes are
+	// exempt from CORS, and a browser does attach cookies to a
+	// cross-origin handshake, so we can't rely on the browser to stop
+	// one; reject a handshake whose Origin header names a different
+	// host than this request. A request with no Origin header (a
+	// non-browser client, or a same-process test) is allowed, since
+	// there's no cross-site page to have sent it. The session cookie's
+	// SameSite=Lax (see newSessionCookie in internal/web/web.go) is a
+	// secondary, defense-in-depth reason a mismatched-origin handshake
+	// would have fallen back to anonymous play even before this check
+	// existed — that's not a reason to omit the check itself.
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true
+		}
+		u, err := url.Parse(origin)
+		return err == nil && u.Host == r.Host
+	},
 }
 
 const (
@@ -27,8 +43,12 @@ const (
 // immediately (so a fresh or reconnecting client is in sync with no
 // separate resync step), then sends render()'s result again every time
 // hub publishes for gameID. It blocks until the connection ends (client
-// disconnect, a render/write failure, or a ping timeout) and returns
-// the error that ended it (nil for a clean client-initiated close).
+// disconnect, a render/write failure, or a ping timeout) and returns an
+// error only when the send/render side is what failed; a nil return
+// covers any client-side disconnection alike (clean close, network
+// drop, or ping timeout) — the read goroutine that detects those
+// discards ReadMessage's error, so the cause isn't distinguishable from
+// the return value.
 // The caller's ResponseWriter must not have been written to yet.
 func ServeSubscriber(w http.ResponseWriter, r *http.Request, hub *Hub, gameID string, render func() ([]byte, error)) error {
 	conn, err := upgrader.Upgrade(w, r, nil)

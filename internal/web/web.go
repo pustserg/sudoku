@@ -355,13 +355,22 @@ func (h *Handler) showBoard(w http.ResponseWriter, r *http.Request) {
 }
 
 // gameWS upgrades to a WebSocket that pushes the "board" template
-// fragment for id every time the game changes (including the moment of
-// connecting, so a fresh or reconnecting client is immediately in
-// sync — see the Phase 4 design spec's "The WS endpoint" section).
+// fragment for id every time the game changes, including the moment of
+// connecting — so a client that just loaded the page, or reconnected
+// after a drop, is brought into sync immediately rather than showing a
+// stale board until the next move happens to occur.
 // Authorization mirrors showBoard: storeFor resolves the caller's
 // scoped store, and store.Get failing (wrong scope, or the id doesn't
 // exist) is rejected before the WebSocket upgrade happens.
 func (h *Handler) gameWS(w http.ResponseWriter, r *http.Request) {
+	if h.hub == nil {
+		// Unlike wrap (used by the other handlers), ServeSubscriber has
+		// no nil-safe path: Hub.Subscribe on a nil *Hub would panic. A
+		// nil hub only happens if routes are registered without one
+		// wired in, which no current caller does, but guard anyway.
+		http.Error(w, "realtime sync not configured", http.StatusInternalServerError)
+		return
+	}
 	id := r.PathValue("id")
 	store, _, err := h.storeFor(r)
 	if err != nil {

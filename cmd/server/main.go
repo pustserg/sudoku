@@ -18,6 +18,7 @@ import (
 	"github.com/pustserg/sudoku/internal/game"
 	"github.com/pustserg/sudoku/internal/sudoku"
 	"github.com/pustserg/sudoku/internal/web"
+	"github.com/pustserg/sudoku/internal/ws"
 )
 
 func main() {
@@ -45,6 +46,7 @@ func main() {
 	puzzleLookup := game.PuzzleLookup(func(ctx context.Context, d sudoku.Difficulty) (sudoku.Puzzle, error) {
 		return db.RandomPuzzle(ctx, sqlDB, d)
 	})
+	hub := ws.NewHub()
 
 	// secureCookies mirrors whether this deployment is actually served
 	// over HTTPS: true wherever GoogleRedirectURL is https:// (every
@@ -54,8 +56,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler)
-	api.NewHandler(anonStore, puzzleLookup, authSvc, sqlDB, nil).Register(mux)
-	web.NewHandler(anonStore, puzzleLookup, authSvc, sqlDB, secureCookies, nil).Register(mux)
+	api.NewHandler(anonStore, puzzleLookup, authSvc, sqlDB, hub).Register(mux)
+	web.NewHandler(anonStore, puzzleLookup, authSvc, sqlDB, secureCookies, hub).Register(mux)
 
 	addr := ":" + cfg.Port
 	log.Printf("listening on %s", addr)

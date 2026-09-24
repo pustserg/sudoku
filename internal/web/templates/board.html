@@ -459,6 +459,11 @@
     }
   });
 
+  function refreshOverlays() {
+    applyNotes();
+    applySelection();
+  }
+
   document.body.addEventListener("htmx:afterSwap", function () {
     if (selected) {
       var cell = findCell(selected.row, selected.col);
@@ -469,11 +474,29 @@
         }
       }
     }
-    applyNotes();
-    applySelection();
+    refreshOverlays();
   });
 
-  applyNotes();
+  function wsURL(id) {
+    var proto = location.protocol === "https:" ? "wss:" : "ws:";
+    return proto + "//" + location.host + "/ws/games/" + id;
+  }
+
+  function connectWS() {
+    var socket = new WebSocket(wsURL(gameID));
+    socket.addEventListener("message", function (e) {
+      var board = document.getElementById("board");
+      if (!board) return;
+      board.outerHTML = e.data;
+      refreshOverlays();
+    });
+    socket.addEventListener("close", function () {
+      setTimeout(connectWS, 1000);
+    });
+  }
+
+  refreshOverlays();
+  connectWS();
 })();
 </script>
 </body>

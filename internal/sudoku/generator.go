@@ -8,6 +8,11 @@ type Puzzle struct {
 	Givens     Grid
 	Solution   Grid
 	Difficulty Difficulty
+	// ID identifies this puzzle's row in the pregenerated pool (see
+	// internal/db). It's a persistence detail, not part of the puzzle's
+	// logical content, and is zero for a freshly Generate()d puzzle that
+	// hasn't been inserted into the pool yet.
+	ID int64
 }
 
 // maxGenerateAttempts bounds how many full grids Generate tries before

@@ -28,12 +28,15 @@ should be shippable/demoable on its own before moving to the next.
 
 ## Phase 3 — Accounts and persistence
 
+**Status: shipped.**
+
 - PostgreSQL schema + migrations: `users`, `games` (added alongside the
   existing `puzzles` table).
-- OAuth login (Google/GitHub), session cookie for the web UI, bearer token
-  support on the API for future mobile use.
+- OAuth login via Google (GitHub login deferred to a future phase), session
+  cookie for the web UI, bearer token support on the API for future mobile use.
 - Save/resume games per logged-in user; anonymous play still works but
   isn't persisted.
+- Migrations run automatically on server startup.
 
 ## Phase 4 — Realtime sync
 

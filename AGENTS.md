@@ -31,12 +31,14 @@ full feature and tech-stack overview.
   row from `puzzles`; it must not call the generator at request time.
   Difficulty rating logic belongs in `internal/sudoku` so both the CLI and
   any future re-rating tooling use the same rules.
-- **Auth**: OAuth (Google/GitHub) via `golang.org/x/oauth2`. Web UI uses a
-  signed, httpOnly session cookie; API requests (for future mobile) use a
-  bearer token. Don't implement password-based auth — it's out of scope by
-  design.
+- **Auth**: OAuth via `golang.org/x/oauth2`. Currently Google only; GitHub
+  login is deferred to a future phase. Web UI uses a signed, httpOnly session
+  cookie; API requests (for future mobile) use a bearer token. Don't implement
+  password-based auth — it's out of scope by design.
 - **Migrations**: use `golang-migrate`, add a new migration file per schema
-  change, never hand-edit an already-applied migration.
+  change, never hand-edit an already-applied migration. Migrations run
+  automatically when the server starts; `cmd/migrate` remains available for
+  manual use or running migrations down if needed.
 
 ## Git workflow
 

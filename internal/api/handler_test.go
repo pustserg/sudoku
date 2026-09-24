@@ -3,14 +3,31 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
+	"github.com/pustserg/sudoku/internal/auth"
+	"github.com/pustserg/sudoku/internal/db"
 	"github.com/pustserg/sudoku/internal/game"
 	"github.com/pustserg/sudoku/internal/sudoku"
 )
+
+// testDatabaseURL mirrors internal/db's helper: tests that need a real,
+// already-migrated Postgres database skip without one.
+func testDatabaseURL(t *testing.T) string {
+	t.Helper()
+	url := os.Getenv("SUDOKU_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("SUDOKU_TEST_DATABASE_URL not set, skipping integration test")
+	}
+	return url
+}
 
 func testHandler() (*Handler, *game.Store) {
 	store := game.NewStore()
@@ -21,7 +38,67 @@ func testHandler() (*Handler, *game.Store) {
 		solution[0][1] = 3
 		return sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: d}, nil
 	}
-	return NewHandler(store, lookup), store
+	return NewHandler(store, lookup, nil, nil), store
+}
+
+// testHandlerWithAuth is like testHandler but also wires a real
+// auth.Service (backed by sqlDB) so authenticated-request tests can
+// exercise the logged-in path end to end.
+func testHandlerWithAuth(t *testing.T) (h *Handler, authSvc *auth.Service, sqlDB *sql.DB) {
+	t.Helper()
+	sqlDB, err := db.Open(testDatabaseURL(t))
+	if err != nil {
+		t.Fatalf("db.Open() error: %v", err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+
+	authSvc = auth.NewService(sqlDB, "unused", "unused", "unused")
+	store := game.NewStore()
+	lookup := func(ctx context.Context, d sudoku.Difficulty) (sudoku.Puzzle, error) {
+		var givens, solution sudoku.Grid
+		givens[0][0] = 5
+		solution[0][0] = 5
+		solution[0][1] = 3
+		return sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: d}, nil
+	}
+	h = NewHandler(store, lookup, authSvc, sqlDB)
+	return h, authSvc, sqlDB
+}
+
+// loginTestUser inserts a user + session directly (bypassing the real
+// Google flow, which these tests don't exercise) and returns a bearer
+// token for it.
+func loginTestUser(t *testing.T, sqlDB *sql.DB, email string) string {
+	t.Helper()
+	ctx := context.Background()
+	var userID int64
+	if err := sqlDB.QueryRowContext(ctx, `
+		INSERT INTO users (provider, provider_user_id, email) VALUES ('google', $1, $2) RETURNING id`,
+		email, email).Scan(&userID); err != nil {
+		t.Fatalf("insert test user: %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB.ExecContext(ctx, "DELETE FROM users WHERE id = $1", userID)
+	})
+	token, err := auth.RandomToken(32)
+	if err != nil {
+		t.Fatalf("RandomToken: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, now() + interval '1 hour')`,
+		auth.TokenHashForTest(token), userID); err != nil {
+		t.Fatalf("insert test session: %v", err)
+	}
+	return token
+}
+
+func mustCreate(t *testing.T, store *game.Store, p sudoku.Puzzle) *game.Game {
+	t.Helper()
+	g, err := store.Create(context.Background(), p)
+	if err != nil {
+		t.Fatalf("store.Create() error = %v, want nil", err)
+	}
+	return g
 }
 
 func newMux(h *Handler) *http.ServeMux {
@@ -76,7 +153,7 @@ func TestCreateGame(t *testing.T) {
 func TestGetGame(t *testing.T) {
 	h, store := testHandler()
 	var givens sudoku.Grid
-	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
 	mux := newMux(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/games/"+g.ID, nil)
@@ -110,9 +187,11 @@ func TestGetGameNotFound(t *testing.T) {
 
 func TestSubmitMove(t *testing.T) {
 	h, store := testHandler()
-	var givens sudoku.Grid
+	var givens, solution sudoku.Grid
 	givens[0][0] = 5
-	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
+	solution[0][0] = 5
+	solution[0][1] = 3 // != givens[0][1] (0), so the game isn't already solved at creation
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: sudoku.Easy})
 	mux := newMux(h)
 
 	body := `{"row":0,"col":1,"value":7}`
@@ -134,9 +213,11 @@ func TestSubmitMove(t *testing.T) {
 
 func TestSubmitMoveOnGivenCell(t *testing.T) {
 	h, store := testHandler()
-	var givens sudoku.Grid
+	var givens, solution sudoku.Grid
 	givens[0][0] = 5
-	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
+	solution[0][0] = 5
+	solution[0][1] = 3 // != givens[0][1] (0), so the game isn't already solved at creation
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: sudoku.Easy})
 	mux := newMux(h)
 
 	body := `{"row":0,"col":0,"value":9}`
@@ -152,7 +233,7 @@ func TestSubmitMoveOnGivenCell(t *testing.T) {
 func TestSubmitMoveOutOfRange(t *testing.T) {
 	h, store := testHandler()
 	var givens sudoku.Grid
-	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy})
 	mux := newMux(h)
 
 	body := `{"row":9,"col":0,"value":1}`
@@ -181,11 +262,13 @@ func TestSubmitMoveUnknownGame(t *testing.T) {
 
 func TestSubmitMoveWrongValueIncrementsMistakes(t *testing.T) {
 	h, store := testHandler()
-	var givens sudoku.Grid
+	var givens, solution sudoku.Grid
 	givens[0][0] = 5
-	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Easy}) // solution[0][1] == 0
+	solution[0][0] = 5
+	solution[0][1] = 3 // != givens[0][1] (0), so the game isn't already solved at creation
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: sudoku.Easy})
 
-	body := `{"row":0,"col":1,"value":9}` // wrong: solution wants 0 here
+	body := `{"row":0,"col":1,"value":9}` // wrong: solution wants 3 here
 	req := httptest.NewRequest(http.MethodPost, "/api/games/"+g.ID+"/moves", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
 	mux := newMux(h)
@@ -211,8 +294,9 @@ func TestSubmitMoveWrongValueIncrementsMistakes(t *testing.T) {
 
 func TestSubmitMoveAfterGameOver(t *testing.T) {
 	h, store := testHandler()
-	var givens sudoku.Grid
-	g := store.Create(sudoku.Puzzle{Givens: givens, Solution: givens, Difficulty: sudoku.Hard}) // MaxMistakes == 3, solution[0][1] == 0
+	var givens, solution sudoku.Grid
+	solution[0][1] = 3                                                                                    // != givens[0][1] (0), so the game isn't already solved at creation
+	g := mustCreate(t, store, sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: sudoku.Hard}) // MaxMistakes == 3
 	mux := newMux(h)
 
 	for i := 0; i < 3; i++ {
@@ -232,5 +316,164 @@ func TestSubmitMoveAfterGameOver(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Errorf("status after game over = %d, want %d (body: %s)", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}
+
+func TestCreateGameUsesDBStoreWhenAuthenticated(t *testing.T) {
+	h, _, sqlDB := testHandlerWithAuth(t)
+	token := loginTestUser(t, sqlDB, "api-create-"+t.Name()+"@example.com")
+
+	req := httptest.NewRequest("POST", "/api/games", bytes.NewBufferString(`{"difficulty":"easy"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	newMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	var state gameState
+	if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB.ExecContext(context.Background(), "DELETE FROM games WHERE id = $1", state.ID)
+	})
+
+	// Scoped to this test's own game id, not a table-wide count: a
+	// table-wide SELECT/DELETE here would give false failures against a
+	// database with other rows already in it, and would destroy any
+	// developer's real local game data if run against their dev DB.
+	var count int
+	if err := sqlDB.QueryRowContext(context.Background(), "SELECT count(*) FROM games WHERE id = $1", state.ID).Scan(&count); err != nil {
+		t.Fatalf("query games count: %v", err)
+	}
+	if count == 0 {
+		t.Error("no row was written to the games table for an authenticated create")
+	}
+}
+
+func TestCreateGameAuthenticatedAvoidsRepeatPuzzle(t *testing.T) {
+	h, _, sqlDB := testHandlerWithAuth(t)
+	token := loginTestUser(t, sqlDB, "api-repeat-"+t.Name()+"@example.com")
+	ctx := context.Background()
+
+	createEasyGame := func() (gameID string) {
+		req := httptest.NewRequest("POST", "/api/games", bytes.NewBufferString(`{"difficulty":"easy"}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		newMux(h).ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+		}
+		var state gameState
+		if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		t.Cleanup(func() {
+			sqlDB.ExecContext(ctx, "DELETE FROM games WHERE id = $1", state.ID)
+		})
+		return state.ID
+	}
+	puzzleIDFor := func(gameID string) int64 {
+		var id sql.NullInt64
+		if err := sqlDB.QueryRowContext(ctx, "SELECT puzzle_id FROM games WHERE id = $1", gameID).Scan(&id); err != nil {
+			t.Fatalf("query puzzle_id for %q: %v", gameID, err)
+		}
+		if !id.Valid {
+			t.Fatalf("games.puzzle_id is NULL for %q, want a real puzzle id", gameID)
+		}
+		return id.Int64
+	}
+
+	game1ID := createEasyGame()
+	puzzle1 := puzzleIDFor(game1ID)
+
+	// Mark game1 complete directly (bypassing real play, whose target
+	// digits aren't known to this test) so the next create isn't just a
+	// resume of the same in-progress game via the
+	// games_one_active_per_difficulty constraint.
+	if _, err := sqlDB.ExecContext(ctx, "UPDATE games SET status = 'solved' WHERE id = $1", game1ID); err != nil {
+		t.Fatalf("mark game1 solved: %v", err)
+	}
+
+	game2ID := createEasyGame()
+	puzzle2 := puzzleIDFor(game2ID)
+
+	if puzzle2 == puzzle1 {
+		t.Errorf("second Create() reused puzzle %d that this user already played, want a different one", puzzle1)
+	}
+}
+
+func TestCreateGameAnonymousDoesNotTouchDB(t *testing.T) {
+	h, _, sqlDB := testHandlerWithAuth(t)
+
+	// Anonymous play never gets its own row to scope by (that's the
+	// point being tested), so this compares a before/after count of the
+	// whole table instead of asserting it's 0 outright or deleting from
+	// it: that avoids both a false failure against a database that
+	// already has other rows in it, and destroying any developer's real
+	// local game data if this suite is run against their dev DB.
+	var before int
+	if err := sqlDB.QueryRowContext(context.Background(), "SELECT count(*) FROM games").Scan(&before); err != nil {
+		t.Fatalf("query games count before: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/api/games", bytes.NewBufferString(`{"difficulty":"easy"}`))
+	rec := httptest.NewRecorder()
+	newMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var after int
+	if err := sqlDB.QueryRowContext(context.Background(), "SELECT count(*) FROM games").Scan(&after); err != nil {
+		t.Fatalf("query games count after: %v", err)
+	}
+	if after != before {
+		t.Errorf("games table row count changed from %d to %d after an anonymous create, want unchanged", before, after)
+	}
+}
+
+func TestLogoutClearsSession(t *testing.T) {
+	h, _, sqlDB := testHandlerWithAuth(t)
+	token := loginTestUser(t, sqlDB, "api-logout-"+t.Name()+"@example.com")
+
+	req := httptest.NewRequest("POST", "/api/auth/logout", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	newMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+
+	var count int
+	if err := sqlDB.QueryRowContext(context.Background(), "SELECT count(*) FROM sessions WHERE token_hash = $1", auth.TokenHashForTest(token)).Scan(&count); err != nil {
+		t.Fatalf("query sessions: %v", err)
+	}
+	if count != 0 {
+		t.Error("session row still exists after logout")
+	}
+}
+
+// TestAuthFallbackToAnon exercises storeFor's error-classification
+// logic in isolation. Triggering a genuine non-ErrNoSession failure out
+// of a real auth.Service.Authenticate would need fault injection into
+// the database connection, which isn't practical here — this unit test
+// instead pins the classification rule storeFor depends on: only
+// auth.ErrNoSession means "fall back to anonymous," anything else must
+// be propagated as a real error.
+func TestAuthFallbackToAnon(t *testing.T) {
+	if !authFallbackToAnon(auth.ErrNoSession) {
+		t.Error("authFallbackToAnon(auth.ErrNoSession) = false, want true")
+	}
+	if !authFallbackToAnon(fmt.Errorf("lookup session: %w", auth.ErrNoSession)) {
+		t.Error("authFallbackToAnon(wrapped auth.ErrNoSession) = false, want true (errors.Is should still match)")
+	}
+
+	other := errors.New("boom: database connection lost")
+	if authFallbackToAnon(other) {
+		t.Error("authFallbackToAnon(other error) = true, want false: a genuine failure must not be silently treated as no-session")
 	}
 }

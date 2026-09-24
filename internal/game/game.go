@@ -35,9 +35,9 @@ func (g *Game) Failed() bool {
 	return g.Mistakes >= g.MaxMistakes
 }
 
-// maxMistakesFor returns the mistake allowance for a given difficulty:
+// MaxMistakesFor returns the mistake allowance for a given difficulty:
 // 5 for Easy/Medium, 3 for Hard/Expert.
-func maxMistakesFor(d sudoku.Difficulty) int {
+func MaxMistakesFor(d sudoku.Difficulty) int {
 	if d == sudoku.Hard || d == sudoku.Expert {
 		return 3
 	}
@@ -51,7 +51,48 @@ var (
 	ErrGameOver   = errors.New("game is over: mistake limit reached")
 )
 
+// GameStore is the interface both the in-memory Store (anonymous play)
+// and the Postgres-backed db.GameStore (logged-in play) implement, so
+// internal/api and internal/web can depend on the interface and pick an
+// implementation per request without duplicating move-handling code.
+type GameStore interface {
+	Create(ctx context.Context, p sudoku.Puzzle) (*Game, error)
+	Get(ctx context.Context, id string) (*Game, error)
+	ApplyMove(ctx context.Context, id string, row, col, value int) (*Game, error)
+}
+
+// ApplyMove mutates g in place according to a player move (0 clears the
+// cell) and returns the sentinel error to reject it with, or nil on
+// success. value must be 0-9; row and col must be 0-8. A cell that is
+// non-zero in g.Givens cannot be changed. Placing a non-zero value that
+// doesn't match g.Solution still fills the cell (so the player can see
+// what they entered) but counts as a mistake. No further moves are
+// accepted once g.Failed() or g.Solved() is already true — this matters
+// beyond the in-memory store: db.GameStore.ApplyMove re-derives and
+// persists status from the game state on every move, so an accepted
+// move on an already-solved game would write status back to
+// 'in_progress' on a solved row. This is the single place
+// move-validation rules live — both GameStore implementations call it
+// after loading their own copy of the Game.
+func ApplyMove(g *Game, row, col, value int) error {
+	if row < 0 || row > 8 || col < 0 || col > 8 || value < 0 || value > 9 {
+		return ErrOutOfRange
+	}
+	if g.Failed() || g.Solved() {
+		return ErrGameOver
+	}
+	if g.Givens[row][col] != 0 {
+		return ErrGivenCell
+	}
+	if value != 0 && value != g.Solution[row][col] {
+		g.Mistakes++
+	}
+	g.Current[row][col] = value
+	return nil
+}
+
 // Store holds all in-progress games in memory, safe for concurrent use.
+// It implements GameStore and backs anonymous (not-logged-in) play.
 type Store struct {
 	mu    sync.Mutex
 	games map[string]*Game
@@ -63,49 +104,44 @@ func NewStore() *Store {
 }
 
 // Create starts a new Game from a freshly pulled puzzle and returns it.
-// Returns an independent copy to prevent data races from concurrent access.
-func (s *Store) Create(p sudoku.Puzzle) *Game {
+// Returns an independent copy to prevent data races from concurrent
+// access. The context is accepted to satisfy GameStore; the in-memory
+// store never uses it.
+func (s *Store) Create(ctx context.Context, p sudoku.Puzzle) (*Game, error) {
 	g := &Game{
-		ID:          newID(),
+		ID:          NewID(),
 		Givens:      p.Givens,
 		Current:     p.Givens,
 		Solution:    p.Solution,
 		Difficulty:  p.Difficulty,
-		MaxMistakes: maxMistakesFor(p.Difficulty),
+		MaxMistakes: MaxMistakesFor(p.Difficulty),
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.games[g.ID] = g
 	result := *g
-	return &result
+	return &result, nil
 }
 
-// Get returns the game with the given ID, or ok=false if it doesn't exist.
-// Returns an independent copy to prevent data races from concurrent access.
-func (s *Store) Get(id string) (*Game, bool) {
+// Get returns the game with the given ID, or ErrNotFound if it doesn't
+// exist. Returns an independent copy to prevent data races from
+// concurrent access.
+func (s *Store) Get(ctx context.Context, id string) (*Game, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g, ok := s.games[id]
 	if !ok {
-		return nil, false
+		return nil, ErrNotFound
 	}
 	copy := *g
-	return &copy, true
+	return &copy, nil
 }
 
-// ApplyMove sets Current[row][col] = value (0 clears the cell) on the
-// game with the given id, and returns the updated Game. value must be
-// 0-9; row and col must be 0-8. A cell that is non-zero in Givens cannot
-// be changed. Placing a non-zero value that doesn't match Solution still
-// fills the cell (so the player can see what they entered) but counts as
-// a mistake; once the game's mistake allowance is used up, further moves
-// are rejected with ErrGameOver. Returns an independent copy to prevent
-// data races from concurrent access.
-func (s *Store) ApplyMove(id string, row, col, value int) (*Game, error) {
-	if row < 0 || row > 8 || col < 0 || col > 8 || value < 0 || value > 9 {
-		return nil, ErrOutOfRange
-	}
-
+// ApplyMove applies a move to the game with the given id via the shared
+// ApplyMove rules and returns the updated Game. Returns ErrNotFound if
+// id doesn't exist. Returns an independent copy to prevent data races
+// from concurrent access.
+func (s *Store) ApplyMove(ctx context.Context, id string, row, col, value int) (*Game, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -113,25 +149,19 @@ func (s *Store) ApplyMove(id string, row, col, value int) (*Game, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
-	if g.Failed() {
-		return nil, ErrGameOver
+	if err := ApplyMove(g, row, col, value); err != nil {
+		return nil, err
 	}
-	if g.Givens[row][col] != 0 {
-		return nil, ErrGivenCell
-	}
-	if value != 0 && value != g.Solution[row][col] {
-		g.Mistakes++
-	}
-	g.Current[row][col] = value
 	copy := *g
 	return &copy, nil
 }
 
-// newID returns a random, opaque, unguessable-enough game identifier.
+// NewID returns a random, opaque, unguessable-enough identifier, used
+// both for game IDs and (by internal/auth) session tokens.
 // crypto/rand.Read failing indicates the environment itself is broken
 // (no source of randomness available); there is no sane recovery, so
 // this panics rather than returning a predictable or empty ID.
-func newID() string {
+func NewID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		panic("game: failed to read random bytes: " + err.Error())

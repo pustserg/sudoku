@@ -66,12 +66,18 @@ docker compose up -d postgres
 docker compose ps postgres   # wait until it reports "healthy"
 ```
 
-**2. Point at the database and apply migrations:**
+**2. Set environment variables:**
 
 ```bash
 export DATABASE_URL='postgres://sudoku:sudoku@localhost:5432/sudoku?sslmode=disable'
-go run ./cmd/migrate up
+export GOOGLE_CLIENT_ID='<your-client-id>'
+export GOOGLE_CLIENT_SECRET='<your-client-secret>'
+export GOOGLE_REDIRECT_URL='http://localhost:8080/auth/google/callback'
 ```
+
+(See your Google OAuth app settings for the client ID and secret. Migrations run
+automatically on server startup, so no manual `go run ./cmd/migrate` step is needed.
+`cmd/migrate` remains available if you need to run migrations manually or for `down`.)
 
 **3. Generate a puzzle pool.** The defaults (50,000 puzzles per difficulty)
 are meant for a real deployment; for local testing, a much smaller pool is
@@ -101,9 +107,9 @@ curl localhost:8080/api/games/<id>
 curl -X POST localhost:8080/api/games/<id>/moves -H 'Content-Type: application/json' -d '{"row":0,"col":1,"value":4}'
 ```
 
-Game state itself is in-memory for now (per the current roadmap phase), so
-restarting `cmd/server` loses all in-progress games — only the puzzle pool
-persists in Postgres.
+Logged-in users have persistent, resumable games (one in-progress game per difficulty
+stored in PostgreSQL); anonymous play remains in-memory and is not persisted across
+server restarts.
 
 **Cleanup:** `docker compose down` (add `-v` to also wipe the Postgres data
 volume, which removes the puzzle pool too).

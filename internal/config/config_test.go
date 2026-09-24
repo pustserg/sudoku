@@ -29,3 +29,33 @@ func TestLoadFromEnv(t *testing.T) {
 		t.Errorf("DatabaseURL = %q, want %q", cfg.DatabaseURL, "postgres://example")
 	}
 }
+
+func TestLoadGoogleOAuthFromEnv(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "client-id")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "client-secret")
+	t.Setenv("GOOGLE_REDIRECT_URL", "http://localhost:8080/auth/google/callback")
+
+	cfg := Load()
+
+	if cfg.GoogleClientID != "client-id" {
+		t.Errorf("GoogleClientID = %q, want %q", cfg.GoogleClientID, "client-id")
+	}
+	if cfg.GoogleClientSecret != "client-secret" {
+		t.Errorf("GoogleClientSecret = %q, want %q", cfg.GoogleClientSecret, "client-secret")
+	}
+	if cfg.GoogleRedirectURL != "http://localhost:8080/auth/google/callback" {
+		t.Errorf("GoogleRedirectURL = %q, want %q", cfg.GoogleRedirectURL, "http://localhost:8080/auth/google/callback")
+	}
+}
+
+func TestLoadGoogleOAuthDefaultsEmpty(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "")
+	t.Setenv("GOOGLE_REDIRECT_URL", "")
+
+	cfg := Load()
+
+	if cfg.GoogleClientID != "" || cfg.GoogleClientSecret != "" || cfg.GoogleRedirectURL != "" {
+		t.Errorf("Google fields = %q/%q/%q, want all empty when unset", cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL)
+	}
+}

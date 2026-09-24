@@ -54,7 +54,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler)
-	api.NewHandler(anonStore, puzzleLookup, authSvc, sqlDB).Register(mux)
+	api.NewHandler(anonStore, puzzleLookup, authSvc, sqlDB, nil).Register(mux)
 	web.NewHandler(anonStore, puzzleLookup, authSvc, sqlDB, secureCookies).Register(mux)
 
 	addr := ":" + cfg.Port

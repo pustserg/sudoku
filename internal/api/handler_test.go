@@ -38,7 +38,7 @@ func testHandler() (*Handler, *game.Store) {
 		solution[0][1] = 3
 		return sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: d}, nil
 	}
-	return NewHandler(store, lookup, nil, nil), store
+	return NewHandler(store, lookup, nil, nil, nil), store
 }
 
 // testHandlerWithAuth is like testHandler but also wires a real
@@ -61,7 +61,7 @@ func testHandlerWithAuth(t *testing.T) (h *Handler, authSvc *auth.Service, sqlDB
 		solution[0][1] = 3
 		return sudoku.Puzzle{Givens: givens, Solution: solution, Difficulty: d}, nil
 	}
-	h = NewHandler(store, lookup, authSvc, sqlDB)
+	h = NewHandler(store, lookup, authSvc, sqlDB, nil)
 	return h, authSvc, sqlDB
 }
 

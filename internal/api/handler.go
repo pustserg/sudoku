@@ -12,6 +12,7 @@ import (
 	"github.com/pustserg/sudoku/internal/db"
 	"github.com/pustserg/sudoku/internal/game"
 	"github.com/pustserg/sudoku/internal/sudoku"
+	"github.com/pustserg/sudoku/internal/ws"
 )
 
 // Handler serves the JSON REST API for creating and playing games, plus
@@ -21,15 +22,18 @@ type Handler struct {
 	puzzles   game.PuzzleLookup
 	auth      *auth.Service
 	sqlDB     *sql.DB
+	hub       *ws.Hub
 }
 
 // NewHandler returns a Handler. anonStore backs anonymous play; puzzles
 // pulls new puzzles; auth and sqlDB back Google login and per-user game
 // persistence. auth and sqlDB may be nil in tests that don't exercise
 // the authenticated path — storeFor then always falls back to
-// anonStore, and the auth endpoints are not expected to be called.
-func NewHandler(anonStore game.GameStore, puzzles game.PuzzleLookup, authSvc *auth.Service, sqlDB *sql.DB) *Handler {
-	return &Handler{anonStore: anonStore, puzzles: puzzles, auth: authSvc, sqlDB: sqlDB}
+// anonStore, and the auth endpoints are not expected to be called. hub
+// may also be nil in tests that don't exercise realtime sync — wrap
+// then returns the store unwrapped.
+func NewHandler(anonStore game.GameStore, puzzles game.PuzzleLookup, authSvc *auth.Service, sqlDB *sql.DB, hub *ws.Hub) *Handler {
+	return &Handler{anonStore: anonStore, puzzles: puzzles, auth: authSvc, sqlDB: sqlDB, hub: hub}
 }
 
 // Register adds this Handler's routes to mux.
@@ -57,16 +61,28 @@ func (h *Handler) Register(mux *http.ServeMux) {
 // into the web UI (see FromRequestBearerOnly's doc comment).
 func (h *Handler) storeFor(r *http.Request) (game.GameStore, int64, error) {
 	if h.auth == nil {
-		return h.anonStore, 0, nil
+		return h.wrap(h.anonStore), 0, nil
 	}
 	user, err := h.auth.Authenticate(r.Context(), auth.FromRequestBearerOnly(r))
 	if err == nil {
-		return db.NewGameStore(h.sqlDB, user.ID), user.ID, nil
+		return h.wrap(db.NewGameStore(h.sqlDB, user.ID)), user.ID, nil
 	}
 	if authFallbackToAnon(err) {
-		return h.anonStore, 0, nil
+		return h.wrap(h.anonStore), 0, nil
 	}
 	return nil, 0, err
+}
+
+// wrap makes a successful ApplyMove on store publish to h.hub, so any
+// WebSocket subscriber watching that game (via internal/web) is
+// notified regardless of whether the move came in through this JSON
+// API or the htmx web handler. A nil h.hub (tests that don't wire one)
+// makes this a passthrough.
+func (h *Handler) wrap(store game.GameStore) game.GameStore {
+	if h.hub == nil {
+		return store
+	}
+	return ws.NotifyingStore{GameStore: store, Hub: h.hub}
 }
 
 // authFallbackToAnon reports whether an error from auth.Service.

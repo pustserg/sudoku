@@ -40,6 +40,8 @@ should be shippable/demoable on its own before moving to the next.
 
 ## Phase 4 — Realtime sync
 
+**Status: shipped.**
+
 - WebSocket endpoint (`internal/ws`) for live game state updates.
 - Open the same game in two tabs/devices and see moves sync instantly.
 - Reconnect/resync handling (e.g. client rejoins after a dropped
